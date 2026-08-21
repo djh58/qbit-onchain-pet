@@ -1,0 +1,13 @@
+{
+  "id": "qbit",
+  "displayName": "Qbit",
+  "description": "The Qbit logo, awake in your terminal \u2014 green orb, swirl tail, and a satellite that orbits while it hashes.",
+  "spritesheetPath": "spritesheet.webp",
+  "kind": "object",
+  "frame": {
+    "width": 192,
+    "height": 208,
+    "columns": 8,
+    "rows": 9
+  }
+}
