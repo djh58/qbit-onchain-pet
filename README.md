@@ -1,7 +1,7 @@
-# Qbit, permanently committed
+# Qbit Genesis — Bytes. Then being.
 
-The animated Qbit mascot, encoded in one Qbit mainnet transaction and
-re-animated from chain data alone.
+The animated Qbit mascot, recovered from one Qbit mainnet transaction and
+re-animated only after its bytes verify in the browser.
 
 - [Live viewer](https://qbit-onchain-pet.thedanhepworth.chatgpt.site)
 - [Mainnet transaction](https://mempool.qbit.org/tx/852748890119300166f0c3050da3fee5c55316d199bcff1425424c009d2e62b9)

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -8,7 +7,9 @@ async function render() {
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("https://qpet.example/", { headers: { accept: "text/html" } }),
+    new Request("https://qpet.example/", {
+      headers: { accept: "text/html", "x-forwarded-host": "attacker.example", "x-forwarded-proto": "http" },
+    }),
     {
       ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
     },
@@ -16,40 +17,32 @@ async function render() {
   );
 }
 
-test("server-renders the finished QPET page with security headers", async () => {
+test("server-renders the Genesis absence state with reviewed security headers", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-  assert.match(response.headers.get("content-security-policy") ?? "", /connect-src 'self' https:\/\/mempool\.qbit\.org/);
+  const csp = response.headers.get("content-security-policy") ?? "";
+  assert.equal(csp, "default-src 'none'; connect-src 'self' https://mempool.qbit.org; img-src 'self' blob:; font-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; manifest-src 'self'");
+  assert.doesNotMatch(csp, /unsafe-eval/);
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("strict-transport-security"), "max-age=31536000; includeSubDomains");
 
   const html = await response.text();
-  assert.match(html, /<title>Qbit, permanently committed<\/title>/i);
-  assert.match(html, /Permanently/);
-  assert.match(html, /committed\./);
-  assert.match(html, /block 53,026/);
-  assert.match(html, /download Qbit for your coding agent/i);
+  assert.match(html, /<title>Qbit Genesis — Bytes\. Then being\.<\/title>/i);
+  assert.match(html, /Bytes\./);
+  assert.match(html, /Then being\./);
+  assert.match(html, /No verified bytes\. No Qbit\./);
+  assert.match(html, /block (?:<!-- -->)?53,026/);
+  assert.match(html, /Get Qbit for your coding agent/i);
   assert.match(html, /https:\/\/codex-pets\.net\/#\/pets\/qbit/);
   assert.match(html, /https:\/\/github\.com\/djh58\/qbit-onchain-pet/);
+  assert.match(html, /https:\/\/qbit-onchain-pet\.thedanhepworth\.chatgpt\.site\/og\.png/);
+  assert.doesNotMatch(html, /attacker\.example/);
   assert.match(html, /<link(?=[^>]*\brel="shortcut icon")(?=[^>]*\bhref="\/favicon\.ico\?v=2")[^>]*>/i);
-  assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
-});
-
-test("ships a decoder and small share assets, but no local animation sheet", async () => {
-  const [page, packageJson, publicFiles] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readdir(new URL("../public/", import.meta.url)),
-  ]);
-
-  assert.match(page, /852748890119300166f0c3050da3fee5c55316d199bcff1425424c009d2e62b9/);
-  assert.match(page, /https:\/\/mempool\.qbit\.org/);
-  assert.match(page, /EXPECTED_ENVELOPE_SHA256/);
-  assert.match(page, /EXPECTED_SHEET_SHA256/);
-  assert.match(page, /readOpReturn/);
-  assert.match(page, /crypto\.subtle\.digest\("SHA-256"/);
-  assert.match(page, /URL\.createObjectURL/);
-  assert.doesNotMatch(page, /spritesheet\.webp|data:image\/webp/i);
-  assert.deepEqual(publicFiles.sort(), ["favicon.ico", "favicon.png", "og.png"]);
-  assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+  assert.match(html, /<link(?=[^>]*\brel="preconnect")(?=[^>]*\bhref="https:\/\/mempool\.qbit\.org")[^>]*>/i);
+  assert.match(html, /<script[^>]*>|<script>/i, "Vinext currently emits inline hydration state");
+  assert.match(html, /<style[^>]*>/i, "Vinext currently emits inline font CSS");
+  assert.doesNotMatch(html, /data-media-origin="verified-blob"/);
+  assert.doesNotMatch(html, /blob:https?:|data:image\/webp|spritesheet\.webp/i);
 });

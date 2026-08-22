@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "network": "main",
+  "networkGenesisHash": "0000000000004d60aa5d46013991d0a0e2995d89ee98e53068ae196d763e79f2",
+  "sourceId": "mempool.qbit.org",
+  "transactionId": "852748890119300166f0c3050da3fee5c55316d199bcff1425424c009d2e62b9",
+  "outputIndex": 0,
+  "blockHeight": 53026,
+  "blockHash": "0000000000000000893a81d2e44e1e16cbaf59cd58f901b6be29603ad2935460",
+  "envelopeLength": 9548,
+  "envelopeSha256": "e9a9ce232eeee3657e87053edf27b0b1f5493c9111d9a37c41fc5cdb85a24247",
+  "sheetLength": 8616,
+  "sheetSha256": "8ea6a2514e745bc4393f9a46cb37d207c2448c716e331143cb80ba14b0654333",
+  "sheetWidth": 1536,
+  "sheetHeight": 1872,
+  "frameWidth": 192,
+  "frameHeight": 208
+}
