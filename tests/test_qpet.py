@@ -138,6 +138,7 @@ class OpReturnTests(unittest.TestCase):
         self.assertEqual(qpet.script_pushes(b"\x6a\x04QPET"), b"QPET")
         self.assertEqual(qpet.script_pushes(b"\x6a\x4c\x04QPET"), b"QPET")
         self.assertEqual(qpet.script_pushes(b"\x6a\x4d\x04\x00QPET"), b"QPET")
+        self.assertEqual(qpet.script_pushes(b"\x6a\x4e\x04\x00\x00\x00QPET"), b"QPET")
 
     def test_rejects_truncation_and_multiple_pushes(self):
         for script in (

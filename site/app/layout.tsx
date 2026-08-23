@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { headers } from "next/headers";
+import { EXPLORER_ORIGIN } from "../genesis/model/facts";
 import "./globals.css";
+
+const CANONICAL_SITE_ORIGIN = "https://qbit-onchain-pet.thedanhepworth.chatgpt.site";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -13,15 +15,12 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export async function generateMetadata(): Promise<Metadata> {
-  const incoming = await headers();
-  const host = incoming.get("x-forwarded-host") ?? incoming.get("host");
-  const protocol = incoming.get("x-forwarded-proto") ?? (host?.startsWith("localhost") ? "http" : "https");
-  const socialImage = host ? `${protocol}://${host}/og.png` : undefined;
+export function generateMetadata(): Metadata {
+  const socialImage = `${CANONICAL_SITE_ORIGIN}/og.png`;
 
   return {
-    title: "Qbit, permanently committed",
-    description: "Meet the animated Qbit mascot encoded in mainnet block 53,026 and reconstructed directly from its transaction.",
+    title: "Qbit Genesis — Bytes. Then being.",
+    description: "Recover and verify the animated Qbit mascot directly from one Qbit mainnet transaction.",
     icons: {
       icon: [
         { url: "/favicon.ico?v=2", type: "image/x-icon" },
@@ -30,16 +29,16 @@ export async function generateMetadata(): Promise<Metadata> {
       shortcut: "/favicon.ico?v=2",
     },
     openGraph: {
-      title: "Qbit, permanently committed",
-      description: "The animated mascot inside Qbit mainnet block 53,026.",
+      title: "Qbit Genesis — Bytes. Then being.",
+      description: "One mainnet transaction; its ID and inscription hashes verified before Qbit animates in your browser.",
       type: "website",
-      images: socialImage ? [{ url: socialImage, alt: "Qbit, permanently committed" }] : undefined,
+      images: [{ url: socialImage, alt: "Qbit recovered from one verified mainnet transaction" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Qbit, permanently committed",
-      description: "The animated mascot inside Qbit mainnet block 53,026.",
-      images: socialImage ? [socialImage] : undefined,
+      title: "Qbit Genesis — Bytes. Then being.",
+      description: "One mainnet transaction; its ID and inscription hashes verified before Qbit animates in your browser.",
+      images: [socialImage],
     },
   };
 }
@@ -47,6 +46,9 @@ export async function generateMetadata(): Promise<Metadata> {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
+      <head>
+        <link rel="preconnect" href={EXPLORER_ORIGIN} crossOrigin="anonymous" />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
     </html>
   );
