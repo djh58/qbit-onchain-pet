@@ -1,31 +1,7 @@
-export type PetState = Readonly<{
-  id: string;
-  row: number;
-  frames: number;
-  fps: number;
-  loop: boolean;
-}>;
+import type { QpetArtifact, QpetManifest, QpetState } from "qscriptions";
 
-export type PetManifest = Readonly<{
-  format: "codex-pet-v1";
-  id: string;
-  displayName: string;
-  description: string;
-  kind: string;
-  author: string;
-  frame: Readonly<{
-    width: number;
-    height: number;
-    columns: number;
-    rows: number;
-  }>;
-  states: readonly PetState[];
-  sheet: Readonly<{
-    contentType: "image/webp";
-    length: number;
-    sha256: string;
-  }>;
-}>;
+export type PetManifest = QpetManifest;
+export type PetState = QpetState;
 
 export type ExplorerStatus = Readonly<{
   confirmed: boolean;
@@ -41,11 +17,7 @@ export type ChainEvidence = Readonly<{
 }>;
 
 export type RecoveredGenesis = Readonly<{
-  manifest: PetManifest;
-  envelope: Uint8Array;
-  sheet: Uint8Array;
-  envelopeDigest: string;
-  sheetDigest: string;
+  qpet: QpetArtifact;
   serializedTransactionLength: number;
   status: ExplorerStatus;
   chainEvidence: ChainEvidence;

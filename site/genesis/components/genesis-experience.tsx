@@ -40,7 +40,7 @@ export function GenesisExperience() {
   const shareGuardRef = useRef(createShareAttemptGuard());
   const [fragment, setFragment] = useState("");
 
-  const manifestStates = state.artifact?.manifest.states;
+  const manifestStates = state.artifact?.qpet.manifest.states;
   const stateIds = useMemo(() => manifestStates?.map((item) => item.id) ?? EMPTY_SEQUENCE, [manifestStates]);
   const decodedChoreography = useMemo(
     () => state.artifact ? decodeChoreography(fragment, stateIds) : null,
@@ -71,7 +71,7 @@ export function GenesisExperience() {
     if (shareAttempt === null) return;
     sharingRef.current = true;
     if (feedbackTimerRef.current !== null) window.clearTimeout(feedbackTimerRef.current);
-    const sequence = recordedStates.length > 0 ? recordedStates : [state.artifact.manifest.states[0].id];
+    const sequence = recordedStates.length > 0 ? recordedStates : [state.artifact.qpet.manifest.states[0].id];
     const completeUrl = buildGenesisShareUrl(window.location, encodeChoreography(sequence, stateIds));
     let nativeShare: ((data: ShareData) => Promise<void>) | undefined;
     let clipboardWrite: ((value: string) => Promise<void>) | undefined;
@@ -221,9 +221,9 @@ export function GenesisExperience() {
           <div><dt>Transaction identity</dt><dd>{state.artifact ? `${state.artifact.serializedTransactionLength.toLocaleString()} serialized bytes · ID recomputed` : "not yet verified"}</dd></div>
           <div><dt>Output</dt><dd>{GENESIS.outputIndex}</dd></div>
           <div><dt>Block</dt><dd><a href={`${EXPLORER_ORIGIN}/block/${GENESIS.blockHash}`} target="_blank" rel="noreferrer">{GENESIS.blockHeight.toLocaleString()} · {GENESIS.blockHash} ↗</a></dd></div>
-          <div><dt>Envelope</dt><dd>{state.artifact ? `${state.artifact.envelope.byteLength.toLocaleString()} bytes · QPET v1 decoded` : "not yet verified"}</dd></div>
-          <div><dt>Manifest</dt><dd>{state.artifact ? `${state.artifact.manifest.format} · ${state.artifact.manifest.id} · ${state.artifact.manifest.states.length} states` : "not yet verified"}</dd></div>
-          <div><dt>Image</dt><dd>{state.artifact ? `${state.artifact.manifest.sheet.contentType} · ${GENESIS.sheetWidth}×${GENESIS.sheetHeight} decoded` : "not yet verified"}</dd></div>
+          <div><dt>Envelope</dt><dd>{state.artifact ? `${state.artifact.qpet.envelopeBytes.byteLength.toLocaleString()} bytes · QPET v1 decoded` : "not yet verified"}</dd></div>
+          <div><dt>Manifest</dt><dd>{state.artifact ? `${state.artifact.qpet.manifest.format} · ${state.artifact.qpet.manifest.id} · ${state.artifact.qpet.manifest.states.length} states` : "not yet verified"}</dd></div>
+          <div><dt>Image</dt><dd>{state.artifact ? `${state.artifact.qpet.manifest.sheet.contentType} · ${GENESIS.sheetWidth}×${GENESIS.sheetHeight} decoded` : "not yet verified"}</dd></div>
           <div><dt>Envelope SHA-256</dt><dd>{GENESIS.envelopeSha256}</dd></div>
           <div><dt>Sheet SHA-256</dt><dd>{GENESIS.sheetSha256}</dd></div>
           <div><dt>Chain evidence</dt><dd>{state.artifact?.chainEvidence.detail ?? "not yet available"}</dd></div>

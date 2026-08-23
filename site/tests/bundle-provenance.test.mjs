@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(siteRoot, "..");
+const QSCRIPTIONS_VERSION = "0.1.0-alpha.0";
+const QSCRIPTIONS_TARBALL = `https://registry.npmjs.org/qscriptions/-/qscriptions-${QSCRIPTIONS_VERSION}.tgz`;
+const QSCRIPTIONS_INTEGRITY = "sha512-sNJ6yanOhLZP30f2pVgrZkLVc3XY1EYNeq3Ko6PpIBCQuHK37X1galmPcqRl9sBeGI6efmc/SGfwLJBzouy8Sw==";
 
 async function filesUnder(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -72,9 +75,30 @@ test("runtime source has only a verified Blob media path", async () => {
   assert.doesNotMatch(runtime, /spritesheet\.webp|assets\/qbit|data:image\/webp/i);
   assert.doesNotMatch(runtime, /document\.execCommand/);
   assert.doesNotMatch(runtime, /tests[\\/]fixtures|genesis-mainnet-esplora/i);
+  assert.match(runtime, /from "qscriptions"/);
+  assert.match(runtime, /extractQpetEnvelope/);
+  assert.match(runtime, /decodeQpetEnvelope/);
+  assert.doesNotMatch(runtime, /readLittleEndian|readQpetPush|validateQpetManifest|parseEnvelope|sha256Hex/);
   assert.match(runtime, /URL\.createObjectURL/);
   assert.match(runtime, /new Blob/);
-  assert.match(runtime, /sheetDigest !== GENESIS\.sheetSha256/);
+  assert.match(runtime, /assertGenesisEnvelopeIdentity\(qpet\)/);
+  assert.match(runtime, /assertGenesisBodyIdentity\(qpet\)/);
+});
+
+test("the site pins the exact public qscriptions alpha from the package root", async () => {
+  const packageManifest = JSON.parse(await readFile(path.join(siteRoot, "package.json"), "utf8"));
+  const packageLock = JSON.parse(await readFile(path.join(siteRoot, "package-lock.json"), "utf8"));
+  const lockedQscriptions = packageLock.packages["node_modules/qscriptions"];
+
+  assert.equal(packageManifest.dependencies.qscriptions, QSCRIPTIONS_VERSION);
+  assert.equal(packageManifest.dependencies.qscriptions.includes("file:"), false);
+  assert.equal(packageManifest.dependencies.qscriptions.includes("git"), false);
+  assert.equal(packageManifest.dependencies.qscriptions.includes("workspace:"), false);
+  assert.equal(packageLock.packages[""].dependencies.qscriptions, QSCRIPTIONS_VERSION);
+  assert.equal(lockedQscriptions.version, QSCRIPTIONS_VERSION);
+  assert.equal(lockedQscriptions.resolved, QSCRIPTIONS_TARBALL);
+  assert.equal(lockedQscriptions.integrity, QSCRIPTIONS_INTEGRITY);
+  assert.equal(lockedQscriptions.link, undefined);
 });
 
 test("the exact full Esplora fixture is repository-only and absent from production output", async () => {

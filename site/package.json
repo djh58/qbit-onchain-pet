@@ -21,6 +21,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
+    "qscriptions": "0.1.0-alpha.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

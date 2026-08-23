@@ -102,8 +102,8 @@ export function useGenesis() {
       let decodeAttempted = false;
       let mediaDecoded = false;
       try {
-        const sheetBuffer = new Uint8Array(result.value.sheet).buffer;
-        sheetUrl = URL.createObjectURL(new Blob([sheetBuffer], { type: result.value.manifest.sheet.contentType }));
+        const sheetBuffer = new Uint8Array(result.value.qpet.bodyBytes).buffer;
+        sheetUrl = URL.createObjectURL(new Blob([sheetBuffer], { type: result.value.qpet.manifest.sheet.contentType }));
         blobUrlRef.current = sheetUrl;
         mediaScope = createAbortScope(lifecycleController.signal);
         mediaTimeout = window.setTimeout(mediaScope.abortForDeadline, MEDIA_DECODE_TIMEOUT_MS);
@@ -120,7 +120,14 @@ export function useGenesis() {
         sheetImage.setAttribute("aria-hidden", "true");
         imageRef.current = sheetImage;
         controllerRef.current = null;
-        const artifact: ReadyGenesis = Object.freeze({ ...result.value, sheetUrl, sheetImage });
+        const artifact: ReadyGenesis = Object.freeze({
+          qpet: result.value.qpet,
+          serializedTransactionLength: result.value.serializedTransactionLength,
+          status: result.value.status,
+          chainEvidence: result.value.chainEvidence,
+          sheetUrl,
+          sheetImage,
+        });
         dispatch({ type: "ready", attemptId, artifact, at: Date.now() });
       } catch {
         if (attemptId !== attemptRef.current) return;

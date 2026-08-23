@@ -3,19 +3,19 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test, vi } from "vitest";
+import { extractQpetEnvelope, type QpetArtifact, type QpetManifest } from "qscriptions";
 import { GENESIS } from "../../genesis/model/facts.ts";
-import type { ExplorerStatus, PetManifest } from "../../genesis/model/types.ts";
+import type { ExplorerStatus } from "../../genesis/model/types.ts";
 import {
+  assertGenesisBodyIdentity,
+  assertGenesisEnvelopeIdentity,
   compactSize,
   fetchBlockHashAttestation,
   hexToBytes,
-  readQpetPush,
   recoverGenesis,
   serializeNonWitnessTransaction,
-  sha256Hex,
   transactionId,
   validateExplorerTransaction,
-  validateQpetManifest,
   type ValidatedExplorerTransaction,
 } from "../../genesis/services/chain-source.ts";
 
@@ -25,11 +25,13 @@ const fixture = JSON.parse(fixtureText) as Record<string, unknown> & {
   vout: Array<Record<string, unknown>>;
   status: Record<string, unknown>;
 };
-const originalEnvelope = readQpetPush(String(fixture.vout[0].scriptpubkey));
+const extractedFixture = extractQpetEnvelope(hexToBytes(String(fixture.vout[0].scriptpubkey)));
+assert.ok(extractedFixture.ok);
+const originalEnvelope = extractedFixture.value;
 const manifestLength = originalEnvelope[5] | (originalEnvelope[6] << 8);
 const originalManifest = JSON.parse(
   new TextDecoder("utf-8", { fatal: true }).decode(originalEnvelope.slice(7, 7 + manifestLength)),
-) as PetManifest;
+) as QpetManifest;
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8" };
 const textHeaders = { "content-type": "text/plain; charset=utf-8" };
@@ -42,16 +44,8 @@ function hex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");
 }
 
-function bytesFromHex(value: string): ArrayBuffer {
-  return Uint8Array.from(Buffer.from(value, "hex")).buffer;
-}
-
 function invalidTransaction(value: unknown): void {
   assert.throws(() => validateExplorerTransaction(value));
-}
-
-function invalidManifest(value: unknown, sheetLength = GENESIS.sheetLength): void {
-  assert.throws(() => validateQpetManifest(value, sheetLength));
 }
 
 function minimalTransaction(confirmed = false): Record<string, unknown> {
@@ -72,6 +66,36 @@ function opReturnFor(envelope: Uint8Array): string {
   const length = new Uint8Array(2);
   new DataView(length.buffer).setUint16(0, envelope.byteLength, true);
   return `6a4d${hex(length)}${hex(envelope)}`;
+}
+
+function encodedEnvelope(manifest: QpetManifest, body = originalEnvelope.slice(7 + manifestLength)): Uint8Array {
+  const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest));
+  const result = new Uint8Array(7 + manifestBytes.byteLength + body.byteLength);
+  result.set(new TextEncoder().encode("QPET"), 0);
+  result[4] = 1;
+  new DataView(result.buffer).setUint16(5, manifestBytes.byteLength, true);
+  result.set(manifestBytes, 7);
+  result.set(body, 7 + manifestBytes.byteLength);
+  return result;
+}
+
+function artifactWith(qpet: QpetArtifact, overrides: Record<string, unknown>): QpetArtifact {
+  const envelopeBytes = overrides.envelopeBytes instanceof Uint8Array
+    ? overrides.envelopeBytes
+    : qpet.envelopeBytes;
+  const bodyBytes = overrides.bodyBytes instanceof Uint8Array
+    ? overrides.bodyBytes
+    : qpet.bodyBytes;
+  return {
+    ...qpet,
+    ...overrides,
+    get envelopeBytes() {
+      return envelopeBytes.slice();
+    },
+    get bodyBytes() {
+      return bodyBytes.slice();
+    },
+  } as unknown as QpetArtifact;
 }
 
 function transactionWithEnvelope(envelope: Uint8Array): typeof fixture {
@@ -134,7 +158,6 @@ async function recoverFromTransaction(
 
 async function withPinnedTransactionId<T>(
   operation: () => Promise<T>,
-  options: Readonly<{ pinEnvelopeDigest?: boolean; pinSheetDigest?: boolean }> = {},
 ): Promise<T> {
   const realDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
   let call = 0;
@@ -142,8 +165,6 @@ async function withPinnedTransactionId<T>(
     call += 1;
     if (call === 1) return new Uint8Array(32).buffer;
     if (call === 2) return Uint8Array.from(Buffer.from(GENESIS.transactionId, "hex")).reverse().buffer;
-    if (call === 3 && options.pinEnvelopeDigest) return bytesFromHex(GENESIS.envelopeSha256);
-    if (call === 4 && options.pinSheetDigest) return bytesFromHex(GENESIS.sheetSha256);
     return realDigest(algorithm, data);
   });
   try {
@@ -154,7 +175,7 @@ async function withPinnedTransactionId<T>(
 }
 
 describe.sequential("chain source exhaustive coverage", () => {
-  test("covers primitive encodings, digests, and transaction serialization failures", async () => {
+  test("covers primitive encodings and transaction serialization failures", async () => {
     assert.equal(hex(compactSize(0)), "00");
     assert.equal(compactSize(Number.MAX_SAFE_INTEGER).byteLength, 9);
     assert.throws(() => compactSize(Number.NaN), RangeError);
@@ -164,7 +185,6 @@ describe.sequential("chain source exhaustive coverage", () => {
     assert.deepEqual(hexToBytes("Aa00"), new Uint8Array([0xaa, 0]));
     assert.deepEqual(hexToBytes(""), new Uint8Array());
 
-    assert.equal(await sha256Hex(new TextEncoder().encode("qbit")), "c70d61b2695dc3c4d0fa58ffea95a8572efe3ffe5a9da40936933a284f7e4b35");
     const transaction = validateExplorerTransaction(minimalTransaction()) as ValidatedExplorerTransaction;
     const serialized = serializeNonWitnessTransaction(transaction);
     assert.ok(serialized.byteLength > 0);
@@ -229,77 +249,6 @@ describe.sequential("chain source exhaustive coverage", () => {
     invalidTransaction({ ...base, status: { ...confirmed, block_time: -1 } });
   });
 
-  test("covers every accepted and rejected historical OP_RETURN push path", () => {
-    const bytes75 = new Uint8Array(75).fill(0xab);
-    assert.deepEqual(readQpetPush(`6a4b${hex(bytes75)}`), bytes75);
-    assert.deepEqual(readQpetPush("6a4c01aa"), new Uint8Array([0xaa]));
-    assert.deepEqual(readQpetPush("6a4d0100aa"), new Uint8Array([0xaa]));
-    assert.deepEqual(readQpetPush("6a4e01000000aa"), new Uint8Array([0xaa]));
-    for (const script of ["zz", "0", "", "6a", "0000", "6a4c", "6a4d00", "6a4e000000", "6a4f", "6a00", "6a01", "6a01aabb"]) {
-      assert.throws(() => readQpetPush(script));
-    }
-  });
-
-  test("validates every manifest field, exact keyset, geometry, state, and sheet bound", () => {
-    assert.equal(validateQpetManifest(clone(originalManifest), GENESIS.sheetLength).states.length, 9);
-    for (const value of [null, 1, []]) invalidManifest(value);
-    invalidManifest({ ...clone(originalManifest), extra: true });
-    const wrongKeys = clone(originalManifest) as unknown as Record<string, unknown>;
-    delete wrongKeys.author;
-    wrongKeys.creator = "dan";
-    invalidManifest(wrongKeys);
-
-    for (const [field, value] of [
-      ["format", "other"],
-      ["id", null],
-      ["id", "\ud800"],
-      ["id", ""],
-      ["id", "x".repeat(65)],
-      ["displayName", ""],
-      ["description", "x".repeat(2_001)],
-      ["kind", ""],
-      ["author", ""],
-    ] as const) invalidManifest({ ...clone(originalManifest), [field]: value });
-    assert.equal(validateQpetManifest({ ...clone(originalManifest), description: "" }, GENESIS.sheetLength).description, "");
-
-    invalidManifest({ ...clone(originalManifest), frame: null });
-    invalidManifest({ ...clone(originalManifest), frame: { ...originalManifest.frame, extra: true } });
-    for (const [field, value] of [
-      ["width", 0], ["width", 4_097], ["height", 0], ["columns", 0], ["rows", 0],
-    ] as const) {
-      invalidManifest({ ...clone(originalManifest), frame: { ...originalManifest.frame, [field]: value } });
-    }
-    invalidManifest({ ...clone(originalManifest), frame: { ...originalManifest.frame, width: 191 } });
-    invalidManifest({ ...clone(originalManifest), frame: { ...originalManifest.frame, height: 207 } });
-
-    invalidManifest({ ...clone(originalManifest), states: null });
-    invalidManifest({ ...clone(originalManifest), states: originalManifest.states.slice(0, 8) });
-    for (const candidate of [null, 1, [], { ...originalManifest.states[0], extra: true }]) {
-      const states = clone(originalManifest.states) as unknown[];
-      states[0] = candidate;
-      invalidManifest({ ...clone(originalManifest), states });
-    }
-    const stateMutations: Array<Readonly<[string, unknown]>> = [
-      ["id", ""], ["id", "\ud800"], ["row", 0.5], ["row", -1], ["row", 9],
-      ["frames", 0], ["frames", 9], ["fps", 0], ["fps", 61], ["loop", "yes"],
-    ];
-    for (const [field, value] of stateMutations) {
-      const states = clone(originalManifest.states) as unknown as Array<Record<string, unknown>>;
-      states[0] = { ...states[0], [field]: value };
-      invalidManifest({ ...clone(originalManifest), states });
-    }
-    const duplicateStates = clone(originalManifest.states) as unknown as Array<Record<string, unknown>>;
-    duplicateStates[1] = { ...duplicateStates[1], id: duplicateStates[0].id };
-    invalidManifest({ ...clone(originalManifest), states: duplicateStates });
-
-    invalidManifest({ ...clone(originalManifest), sheet: null });
-    invalidManifest({ ...clone(originalManifest), sheet: { ...originalManifest.sheet, extra: true } });
-    invalidManifest({ ...clone(originalManifest), sheet: { ...originalManifest.sheet, contentType: "image/png" } });
-    invalidManifest({ ...clone(originalManifest), sheet: { ...originalManifest.sheet, length: 1 } });
-    invalidManifest(clone(originalManifest), GENESIS.sheetLength - 1);
-    invalidManifest({ ...clone(originalManifest), sheet: { ...originalManifest.sheet, sha256: "0".repeat(64) } });
-  });
-
   test("recovers the exact fixture and independently labels explorer evidence", async () => {
     const stages: string[] = [];
     const result = await recoverGenesis(
@@ -309,11 +258,11 @@ describe.sequential("chain source exhaustive coverage", () => {
     );
     assert.equal(result.ok, true);
     if (result.ok) {
-      assert.equal(result.value.envelopeDigest, GENESIS.envelopeSha256);
-      assert.equal(result.value.sheetDigest, GENESIS.sheetSha256);
+      assert.equal(result.value.qpet.hashes.envelopeSha256, GENESIS.envelopeSha256);
+      assert.equal(result.value.qpet.bodySha256, GENESIS.sheetSha256);
       assert.equal(result.value.chainEvidence.status, "confirmed");
-      assert.equal(result.value.envelope.byteLength, GENESIS.envelopeLength);
-      assert.equal(result.value.sheet.byteLength, GENESIS.sheetLength);
+      assert.equal(result.value.qpet.envelopeBytes.byteLength, GENESIS.envelopeLength);
+      assert.equal(result.value.qpet.bodyBytes.byteLength, GENESIS.sheetLength);
     }
     assert.deepEqual(stages, [
       "locating-output", "decoding-envelope", "validating-manifest", "hashing-envelope", "hashing-sheet", "attesting-block",
@@ -424,7 +373,7 @@ describe.sequential("chain source exhaustive coverage", () => {
     assert.equal(!abortFailure.ok && abortFailure.error.code, "timeout");
   });
 
-  test("reports every pinned transaction, output, envelope, manifest, and hash failure stage", async () => {
+  test("reports transaction, output, package decode, Genesis identity, and platform failures", async () => {
     const reportedMismatch = clone(fixture);
     reportedMismatch.txid = "0".repeat(64);
     const reportedResult = await recoverFromTransaction(reportedMismatch);
@@ -445,54 +394,112 @@ describe.sequential("chain source exhaustive coverage", () => {
       assert.equal(!result.ok && result.error.code, "unsupported-script");
     }
 
-    const invalidEnvelopes: Uint8Array[] = [];
-    invalidEnvelopes.push(originalEnvelope.slice(0, -1));
-    for (let index = 0; index < 5; index += 1) {
-      const bytes = originalEnvelope.slice();
-      bytes[index] ^= 0xff;
-      invalidEnvelopes.push(bytes);
-    }
-    const tinyManifest = originalEnvelope.slice();
-    tinyManifest[5] = 1;
-    tinyManifest[6] = 0;
-    invalidEnvelopes.push(tinyManifest);
-    const noSheet = originalEnvelope.slice();
-    new DataView(noSheet.buffer, noSheet.byteOffset, noSheet.byteLength).setUint16(5, noSheet.byteLength - 7, true);
-    invalidEnvelopes.push(noSheet);
-    const invalidJson = originalEnvelope.slice();
-    invalidJson[7] = 0xff;
-    invalidEnvelopes.push(invalidJson);
-    for (const envelope of invalidEnvelopes) {
-      const result = await withPinnedTransactionId(() => recoverFromTransaction(transactionWithEnvelope(envelope)));
-      assert.equal(!result.ok && result.error.code, "invalid-envelope");
-    }
+    const unsupportedPush = clone(fixture);
+    unsupportedPush.vout[0].scriptpubkey = "6a4f";
+    const unsupportedPushResult = await withPinnedTransactionId(() => recoverFromTransaction(unsupportedPush));
+    assert.equal(!unsupportedPushResult.ok && unsupportedPushResult.error.code, "unsupported-script");
 
-    const invalidManifestEnvelope = originalEnvelope.slice();
-    const formatOffset = Buffer.from(invalidManifestEnvelope).indexOf(Buffer.from("codex-pet-v1"));
-    assert.ok(formatOffset > 0);
-    invalidManifestEnvelope[formatOffset] = "x".charCodeAt(0);
+    const truncatedResult = await withPinnedTransactionId(
+      () => recoverFromTransaction(transactionWithEnvelope(new TextEncoder().encode("QPET"))),
+    );
+    assert.equal(!truncatedResult.ok && truncatedResult.error.code, "invalid-envelope");
+    assert.equal(!truncatedResult.ok && truncatedResult.error.stage, "decoding-envelope");
+
+    const invalidManifest = { ...clone(originalManifest), format: "other" } as unknown as QpetManifest;
     const invalidManifestResult = await withPinnedTransactionId(
-      () => recoverFromTransaction(transactionWithEnvelope(invalidManifestEnvelope)),
+      () => recoverFromTransaction(transactionWithEnvelope(encodedEnvelope(invalidManifest))),
     );
     assert.equal(!invalidManifestResult.ok && invalidManifestResult.error.code, "invalid-envelope");
+    assert.equal(!invalidManifestResult.ok && invalidManifestResult.error.stage, "validating-manifest");
 
     const mutatedSheet = originalEnvelope.slice();
     mutatedSheet[mutatedSheet.length - 1] ^= 1;
-    const envelopeHashFailure = await withPinnedTransactionId(
-      () => recoverFromTransaction(transactionWithEnvelope(mutatedSheet)),
-    );
-    assert.equal(!envelopeHashFailure.ok && envelopeHashFailure.error.code, "hash-mismatch");
-    assert.equal(!envelopeHashFailure.ok && envelopeHashFailure.error.stage, "hashing-envelope");
-
     const sheetHashFailure = await withPinnedTransactionId(
       () => recoverFromTransaction(transactionWithEnvelope(mutatedSheet)),
-      { pinEnvelopeDigest: true },
     );
     assert.equal(!sheetHashFailure.ok && sheetHashFailure.error.code, "hash-mismatch");
     assert.equal(!sheetHashFailure.ok && sheetHashFailure.error.stage, "hashing-sheet");
 
+    const otherValidEnvelope = encodedEnvelope({
+      ...clone(originalManifest),
+      description: "A different but internally valid QPET.",
+    });
+    const envelopeHashFailure = await withPinnedTransactionId(
+      () => recoverFromTransaction(transactionWithEnvelope(otherValidEnvelope)),
+    );
+    assert.equal(!envelopeHashFailure.ok && envelopeHashFailure.error.code, "hash-mismatch");
+    assert.equal(!envelopeHashFailure.ok && envelopeHashFailure.error.stage, "hashing-envelope");
+
+    const realDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+    let digestCall = 0;
+    const digestSpy = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async (algorithm, data) => {
+      digestCall += 1;
+      if (digestCall === 3) throw new Error("platform digest unavailable");
+      return realDigest(algorithm, data);
+    });
+    const platformFailure = await recoverFromTransaction(fixture);
+    digestSpy.mockRestore();
+    assert.equal(!platformFailure.ok && platformFailure.error.code, "internal");
+    assert.equal(!platformFailure.ok && platformFailure.error.stage, "validating-manifest");
+
     const internal = await recoverGenesis(new AbortController().signal, () => { throw new Error("reporter failed"); }, exactFetcher());
     assert.equal(!internal.ok && internal.error.code, "internal");
+  });
+
+  test("pins every Genesis artifact identity field before media handoff", async () => {
+    const recovered = await recoverGenesis(new AbortController().signal, () => {}, exactFetcher());
+    assert.equal(recovered.ok, true);
+    if (!recovered.ok) return;
+    const { qpet } = recovered.value;
+
+    assert.doesNotThrow(() => assertGenesisEnvelopeIdentity(qpet));
+    assert.doesNotThrow(() => assertGenesisBodyIdentity(qpet));
+
+    for (const overrides of [
+      { wireFormat: "OTHER" },
+      { wireVersion: 2 },
+      { profile: "other/qpet" },
+      { contentId: `qscr:sha256:${"0".repeat(64)}` },
+      { hashes: { ...qpet.hashes, envelopeSha256: "0".repeat(64) } },
+      { envelopeBytes: new Uint8Array(GENESIS.envelopeLength - 1) },
+    ]) {
+      assert.throws(() => assertGenesisEnvelopeIdentity(artifactWith(qpet, overrides)), /hash-mismatch/);
+    }
+
+    const manifestCases: Record<string, unknown>[] = [
+      { bodyLength: GENESIS.sheetLength - 1 },
+      { bodySha256: "0".repeat(64) },
+      { hashes: { ...qpet.hashes, sheetSha256: "0".repeat(64) } },
+      { bodyBytes: new Uint8Array(GENESIS.sheetLength - 1) },
+      { manifest: { ...qpet.manifest, format: "other" } },
+      { manifest: { ...qpet.manifest, id: "other" } },
+      { manifest: { ...qpet.manifest, displayName: "Other" } },
+      { manifest: { ...qpet.manifest, kind: "creature" } },
+      { manifest: { ...qpet.manifest, author: "other" } },
+      { manifest: { ...qpet.manifest, frame: { ...qpet.manifest.frame, width: GENESIS.frameWidth - 1 } } },
+      { manifest: { ...qpet.manifest, frame: { ...qpet.manifest.frame, height: GENESIS.frameHeight - 1 } } },
+      { manifest: { ...qpet.manifest, frame: { ...qpet.manifest.frame, columns: 7 } } },
+      { manifest: { ...qpet.manifest, frame: { ...qpet.manifest.frame, rows: 8 } } },
+      { manifest: { ...qpet.manifest, sheet: { ...qpet.manifest.sheet, contentType: "image/png" } } },
+      { manifest: { ...qpet.manifest, sheet: { ...qpet.manifest.sheet, length: GENESIS.sheetLength - 1 } } },
+      { manifest: { ...qpet.manifest, sheet: { ...qpet.manifest.sheet, sha256: "0".repeat(64) } } },
+      { manifest: { ...qpet.manifest, states: qpet.manifest.states.slice(0, -1) } },
+    ];
+    for (const [field, value] of [
+      ["id", "other"],
+      ["row", 1],
+      ["frames", 5],
+      ["fps", 5],
+      ["loop", false],
+    ] as const) {
+      const states = qpet.manifest.states.map((state, index) => index === 0
+        ? { ...state, [field]: value }
+        : state);
+      manifestCases.push({ manifest: { ...qpet.manifest, states } });
+    }
+    for (const overrides of manifestCases) {
+      assert.throws(() => assertGenesisBodyIdentity(artifactWith(qpet, overrides)), /hash-mismatch/);
+    }
   });
 
   test("covers block attestation early exits, bodies, bounds, failures, and lifecycle cancellation", async () => {

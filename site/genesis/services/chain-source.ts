@@ -1,11 +1,17 @@
+import {
+  decodeQpetEnvelope,
+  extractQpetEnvelope,
+  type QpetArtifact,
+  type QpetError,
+  type QpetState,
+} from "qscriptions";
 import { EXPLORER_ORIGIN, GENESIS } from "../model/facts";
 import type { ProofStage, RecoveryFailure } from "../model/recovery";
-import type { ChainEvidence, ExplorerStatus, PetManifest, PetState, RecoveredGenesis } from "../model/types";
+import type { ChainEvidence, ExplorerStatus, RecoveredGenesis } from "../model/types";
 
-// Private Genesis integration adapter, not a second public QPET API. Its byte
-// decoding boundary is intentionally isolated here until the exact-pinned
-// qscriptions prerelease can replace it; application components consume only
-// recoverGenesis and normalized ready/failure states.
+// Private Genesis integration adapter, not a second public QPET API. The
+// package proves QPET byte consistency; this module owns source, transaction,
+// exact Genesis identity, chain attestation, and media handoff.
 
 const MAX_RESPONSE_BYTES = 400 * 1024;
 const MAX_SCRIPT_HEX_CHARACTERS = 40_000;
@@ -13,6 +19,18 @@ const MAX_INPUTS = 1_024;
 const MAX_OUTPUTS = 1_024;
 const ATTESTATION_TIMEOUT_MS = 2_000;
 const HEX_64 = /^[0-9a-f]{64}$/;
+const GENESIS_CONTENT_ID = `qscr:sha256:${GENESIS.envelopeSha256}` as const;
+const GENESIS_STATES: readonly QpetState[] = Object.freeze([
+  Object.freeze({ id: "idle", row: 0, frames: 6, fps: 6, loop: true }),
+  Object.freeze({ id: "running-right", row: 1, frames: 8, fps: 12, loop: true }),
+  Object.freeze({ id: "running-left", row: 2, frames: 8, fps: 12, loop: true }),
+  Object.freeze({ id: "waving", row: 3, frames: 4, fps: 5, loop: false }),
+  Object.freeze({ id: "jumping", row: 4, frames: 5, fps: 14, loop: false }),
+  Object.freeze({ id: "failed", row: 5, frames: 8, fps: 6, loop: false }),
+  Object.freeze({ id: "waiting", row: 6, frames: 6, fps: 4, loop: true }),
+  Object.freeze({ id: "running", row: 7, frames: 6, fps: 12, loop: true }),
+  Object.freeze({ id: "review", row: 8, frames: 6, fps: 6, loop: true }),
+]);
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -205,159 +223,94 @@ export function serializeNonWitnessTransaction(transaction: ValidatedExplorerTra
   return concatBytes(chunks);
 }
 
-async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
+async function transactionSha256(bytes: Uint8Array): Promise<Uint8Array> {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes.slice().buffer);
   return new Uint8Array(digest);
 }
 
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  return Array.from(await sha256(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 export async function transactionId(transaction: ValidatedExplorerTransaction): Promise<Readonly<{ id: string; bytes: Uint8Array }>> {
   const bytes = serializeNonWitnessTransaction(transaction);
-  const digest = await sha256(await sha256(bytes));
+  const digest = await transactionSha256(await transactionSha256(bytes));
   return Object.freeze({
     id: Array.from(digest.reverse(), (byte) => byte.toString(16).padStart(2, "0")).join(""),
     bytes,
   });
 }
 
-function readLittleEndian(bytes: Uint8Array, offset: number, length: number): number {
-  if (offset + length > bytes.length) fail("unsupported-script", "decoding-envelope", false);
-  let value = 0;
-  for (let index = 0; index < length; index += 1) value += bytes[offset + index] * 2 ** (8 * index);
-  return value;
-}
-
-export function readQpetPush(scriptHex: string): Uint8Array {
-  let script: Uint8Array;
-  try {
-    script = hexToBytes(scriptHex);
-  } catch {
-    fail("unsupported-script", "decoding-envelope", false);
+export function recoveryFailureForQpet(error: QpetError): RecoveryFailure {
+  if (error.code === "SPRITESHEET_HASH_MISMATCH") {
+    return Object.freeze({
+      code: "hash-mismatch",
+      stage: "hashing-sheet",
+      retryable: false,
+      diagnostic: `qscriptions:${error.code}`,
+    });
   }
-  if (script.byteLength < 2 || script[0] !== 0x6a) fail("unsupported-script", "decoding-envelope", false);
-  let offset = 1;
-  const opcode = script[offset++];
-  let length: number;
-  if (opcode <= 0x4b) length = opcode;
-  else if (opcode === 0x4c) {
-    length = readLittleEndian(script, offset, 1);
-    offset += 1;
-  } else if (opcode === 0x4d) {
-    length = readLittleEndian(script, offset, 2);
-    offset += 2;
-  } else if (opcode === 0x4e) {
-    length = readLittleEndian(script, offset, 4);
-    offset += 4;
-  } else {
-    fail("unsupported-script", "decoding-envelope", false);
+  if (error.stage === "input" || error.stage === "script") {
+    return Object.freeze({
+      code: "unsupported-script",
+      stage: "decoding-envelope",
+      retryable: false,
+      diagnostic: `qscriptions:${error.code}`,
+    });
   }
-  if (length < 1 || offset + length !== script.byteLength) fail("unsupported-script", "decoding-envelope", false);
-  return script.slice(offset);
-}
-
-function exactKeys(value: object, expected: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  const sortedExpected = [...expected].sort();
-  return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
-}
-
-function boundedString(value: unknown, maximumBytes: number, allowEmpty = false): value is string {
-  return typeof value === "string" && value.isWellFormed() && (allowEmpty || value.length > 0) && new TextEncoder().encode(value).byteLength <= maximumBytes;
-}
-
-function positiveInteger(value: unknown, maximum: number): value is number {
-  return Number.isInteger(value) && Number(value) > 0 && Number(value) <= maximum;
-}
-
-export function validateQpetManifest(value: unknown, sheetLength: number): PetManifest {
-  if (!value || typeof value !== "object" || Array.isArray(value)) fail("invalid-envelope", "validating-manifest", false);
-  const manifest = value as Partial<PetManifest>;
-  if (!exactKeys(manifest, ["author", "description", "displayName", "format", "frame", "id", "kind", "sheet", "states"])) {
-    fail("invalid-envelope", "validating-manifest", false);
-  }
-  if (
-    manifest.format !== "codex-pet-v1" ||
-    !boundedString(manifest.id, 64) ||
-    !boundedString(manifest.displayName, 120) ||
-    !boundedString(manifest.description, 2_000, true) ||
-    !boundedString(manifest.kind, 64) ||
-    !boundedString(manifest.author, 120)
-  ) {
-    fail("invalid-envelope", "validating-manifest", false);
-  }
-  const frame = manifest.frame;
-  if (
-    !frame ||
-    !exactKeys(frame, ["width", "height", "columns", "rows"]) ||
-    !positiveInteger(frame.width, 4_096) ||
-    !positiveInteger(frame.height, 4_096) ||
-    !positiveInteger(frame.columns, 256) ||
-    !positiveInteger(frame.rows, 256) ||
-    frame.width * frame.columns !== GENESIS.sheetWidth ||
-    frame.height * frame.rows !== GENESIS.sheetHeight
-  ) {
-    fail("invalid-envelope", "validating-manifest", false);
-  }
-  if (!Array.isArray(manifest.states) || manifest.states.length !== 9) fail("invalid-envelope", "validating-manifest", false);
-  const ids = new Set<string>();
-  const states = manifest.states.map((candidate) => {
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || !exactKeys(candidate, ["id", "row", "frames", "fps", "loop"])) {
-      fail("invalid-envelope", "validating-manifest", false);
-    }
-    const state = candidate as Partial<PetState>;
-    if (
-      !boundedString(state.id, 64) ||
-      ids.has(state.id) ||
-      !Number.isInteger(state.row) ||
-      Number(state.row) < 0 ||
-      Number(state.row) >= frame.rows ||
-      !positiveInteger(state.frames, frame.columns) ||
-      !positiveInteger(state.fps, 60) ||
-      typeof state.loop !== "boolean"
-    ) {
-      fail("invalid-envelope", "validating-manifest", false);
-    }
-    ids.add(state.id);
-    return Object.freeze(state as PetState);
+  return Object.freeze({
+    code: "invalid-envelope",
+    stage: error.stage === "envelope" ? "decoding-envelope" : "validating-manifest",
+    retryable: false,
+    diagnostic: `qscriptions:${error.code}`,
   });
-  const sheet = manifest.sheet;
-  if (
-    !sheet ||
-    !exactKeys(sheet, ["contentType", "length", "sha256"]) ||
-    sheet.contentType !== "image/webp" ||
-    sheet.length !== sheetLength ||
-    sheet.length !== GENESIS.sheetLength ||
-    sheet.sha256 !== GENESIS.sheetSha256
-  ) {
-    fail("invalid-envelope", "validating-manifest", false);
-  }
-  return Object.freeze({ ...manifest, states }) as PetManifest;
 }
 
-function parseEnvelope(envelope: Uint8Array): Readonly<{ manifestValue: unknown; sheet: Uint8Array }> {
+function failQpet(error: QpetError): never {
+  throw new ExpectedFailure(recoveryFailureForQpet(error));
+}
+
+function stateMatches(candidate: QpetState, expected: QpetState): boolean {
+  return candidate.id === expected.id &&
+    candidate.row === expected.row &&
+    candidate.frames === expected.frames &&
+    candidate.fps === expected.fps &&
+    candidate.loop === expected.loop;
+}
+
+export function assertGenesisEnvelopeIdentity(qpet: QpetArtifact): void {
   if (
-    envelope.byteLength !== GENESIS.envelopeLength ||
-    envelope[0] !== 0x51 ||
-    envelope[1] !== 0x50 ||
-    envelope[2] !== 0x45 ||
-    envelope[3] !== 0x54 ||
-    envelope[4] !== 1
+    qpet.wireFormat !== "QPET" ||
+    qpet.wireVersion !== 1 ||
+    qpet.profile !== "legacy/qpet-v1" ||
+    qpet.contentId !== GENESIS_CONTENT_ID ||
+    qpet.hashes.envelopeSha256 !== GENESIS.envelopeSha256 ||
+    qpet.envelopeBytes.byteLength !== GENESIS.envelopeLength
   ) {
-    fail("invalid-envelope", "decoding-envelope", false);
+    fail("hash-mismatch", "hashing-envelope", false);
   }
-  const manifestLength = envelope[5] | (envelope[6] << 8);
-  const sheetOffset = 7 + manifestLength;
-  if (manifestLength < 2 || sheetOffset >= envelope.byteLength) fail("invalid-envelope", "decoding-envelope", false);
-  let manifestValue: unknown;
-  try {
-    manifestValue = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(envelope.slice(7, sheetOffset)));
-  } catch {
-    fail("invalid-envelope", "decoding-envelope", false);
+}
+
+export function assertGenesisBodyIdentity(qpet: QpetArtifact): void {
+  const { frame, sheet, states } = qpet.manifest;
+  if (
+    qpet.bodyLength !== GENESIS.sheetLength ||
+    qpet.bodySha256 !== GENESIS.sheetSha256 ||
+    qpet.hashes.sheetSha256 !== GENESIS.sheetSha256 ||
+    qpet.bodyBytes.byteLength !== GENESIS.sheetLength ||
+    qpet.manifest.format !== "codex-pet-v1" ||
+    qpet.manifest.id !== "qbit" ||
+    qpet.manifest.displayName !== "Qbit" ||
+    qpet.manifest.kind !== "object" ||
+    qpet.manifest.author !== "dan" ||
+    frame.width !== GENESIS.frameWidth ||
+    frame.height !== GENESIS.frameHeight ||
+    frame.columns !== GENESIS.sheetWidth / GENESIS.frameWidth ||
+    frame.rows !== GENESIS.sheetHeight / GENESIS.frameHeight ||
+    sheet.contentType !== "image/webp" ||
+    sheet.length !== GENESIS.sheetLength ||
+    sheet.sha256 !== GENESIS.sheetSha256 ||
+    states.length !== GENESIS_STATES.length ||
+    !states.every((state, index) => stateMatches(state, GENESIS_STATES[index]!))
+  ) {
+    fail("hash-mismatch", "hashing-sheet", false);
   }
-  return Object.freeze({ manifestValue, sheet: envelope.slice(sheetOffset) });
 }
 
 async function readBoundedText(response: Response, signal: AbortSignal): Promise<string> {
@@ -543,24 +496,22 @@ export async function recoverGenesis(
 
     stage = "decoding-envelope";
     reportStage(stage);
-    const envelope = readQpetPush(output.scriptpubkey);
-    const { manifestValue, sheet } = parseEnvelope(envelope);
+    const extracted = extractQpetEnvelope(hexToBytes(output.scriptpubkey));
+    if (!extracted.ok) failQpet(extracted.error);
 
     stage = "validating-manifest";
     reportStage(stage);
-    const manifest = validateQpetManifest(manifestValue, sheet.byteLength);
+    const decoded = await decodeQpetEnvelope(extracted.value);
+    if (!decoded.ok) failQpet(decoded.error);
+    const qpet = decoded.value;
 
     stage = "hashing-envelope";
     reportStage(stage);
-    const envelopeDigest = await sha256Hex(envelope);
-    if (envelopeDigest !== GENESIS.envelopeSha256) fail("hash-mismatch", stage, false);
+    assertGenesisEnvelopeIdentity(qpet);
 
     stage = "hashing-sheet";
     reportStage(stage);
-    const sheetDigest = await sha256Hex(sheet);
-    if (sheetDigest !== GENESIS.sheetSha256) {
-      fail("hash-mismatch", stage, false);
-    }
+    assertGenesisBodyIdentity(qpet);
 
     // This locator cross-check is optional evidence, not part of byte
     // validity. It owns a short timeout and listens only to attempt teardown;
@@ -571,11 +522,7 @@ export async function recoverGenesis(
     return {
       ok: true,
       value: Object.freeze({
-        manifest,
-        envelope,
-        sheet,
-        envelopeDigest,
-        sheetDigest,
+        qpet,
         serializedTransactionLength: identity.bytes.byteLength,
         status: transaction.status,
         chainEvidence: evidenceFor(transaction.status, attestedBlockHash),

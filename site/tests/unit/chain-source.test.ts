@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import type { QpetError } from "qscriptions";
 import {
   compactSize,
   fetchBlockHashAttestation,
-  readQpetPush,
+  recoveryFailureForQpet,
   recoverGenesis,
   serializeNonWitnessTransaction,
   validateExplorerTransaction,
@@ -39,17 +40,36 @@ test("transaction serialization is canonical non-witness Bitcoin encoding", () =
   );
 });
 
-test("historical one-push OP_RETURN forms recover identical QPET bytes", () => {
-  const payload = new TextEncoder().encode("QPET");
-  const forms = [
-    "6a04" + hex(payload),
-    "6a4c04" + hex(payload),
-    "6a4d0400" + hex(payload),
-    "6a4e04000000" + hex(payload),
-  ];
-  for (const script of forms) assert.deepEqual(readQpetPush(script), payload);
-  assert.throws(() => readQpetPush("6a01410142"));
-  assert.throws(() => readQpetPush("6a4d0400"));
+test("bounded qscriptions failures map to the site recovery boundary", () => {
+  const failure = (code: QpetError["code"], stage: QpetError["stage"]): QpetError => ({
+    code,
+    stage,
+    retryable: false,
+  });
+  assert.deepEqual(recoveryFailureForQpet(failure("NOT_OP_RETURN", "script")), {
+    code: "unsupported-script",
+    stage: "decoding-envelope",
+    retryable: false,
+    diagnostic: "qscriptions:NOT_OP_RETURN",
+  });
+  assert.deepEqual(recoveryFailureForQpet(failure("INVALID_QPET_MAGIC", "envelope")), {
+    code: "invalid-envelope",
+    stage: "decoding-envelope",
+    retryable: false,
+    diagnostic: "qscriptions:INVALID_QPET_MAGIC",
+  });
+  assert.deepEqual(recoveryFailureForQpet(failure("INVALID_MANIFEST_SCHEMA", "manifest")), {
+    code: "invalid-envelope",
+    stage: "validating-manifest",
+    retryable: false,
+    diagnostic: "qscriptions:INVALID_MANIFEST_SCHEMA",
+  });
+  assert.deepEqual(recoveryFailureForQpet(failure("SPRITESHEET_HASH_MISMATCH", "body")), {
+    code: "hash-mismatch",
+    stage: "hashing-sheet",
+    retryable: false,
+    diagnostic: "qscriptions:SPRITESHEET_HASH_MISMATCH",
+  });
 });
 
 test("explorer normalization rejects malformed identity and numeric fields", () => {

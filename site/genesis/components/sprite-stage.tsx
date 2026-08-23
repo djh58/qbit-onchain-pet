@@ -47,7 +47,7 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
   const choreographyActiveRef = useRef(!reducedMotion && choreography.length > 0);
   const inactivityTimerRef = useRef<number | null>(null);
   const [xrayOpen, setXrayOpen] = useState(false);
-  const player = useSpritePlayer(artifact.manifest.states, artifact.manifest.frame, reducedMotion);
+  const player = useSpritePlayer(artifact.qpet.manifest.states, artifact.qpet.manifest.frame, reducedMotion);
   const { activeStateId, selectState, subscribe } = player;
 
   const clearChoreographyTimers = useCallback(() => {
@@ -90,21 +90,21 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
     }
     const highlight = highlightRef.current;
     if (highlight) {
-      highlight.style.setProperty("--cell-left", `${(selection.sourceRect.x / artifact.manifest.frame.width / artifact.manifest.frame.columns) * 100}%`);
-      highlight.style.setProperty("--cell-top", `${(selection.sourceRect.y / artifact.manifest.frame.height / artifact.manifest.frame.rows) * 100}%`);
-      highlight.style.setProperty("--cell-width", `${100 / artifact.manifest.frame.columns}%`);
-      highlight.style.setProperty("--cell-height", `${100 / artifact.manifest.frame.rows}%`);
+      highlight.style.setProperty("--cell-left", `${(selection.sourceRect.x / artifact.qpet.manifest.frame.width / artifact.qpet.manifest.frame.columns) * 100}%`);
+      highlight.style.setProperty("--cell-top", `${(selection.sourceRect.y / artifact.qpet.manifest.frame.height / artifact.qpet.manifest.frame.rows) * 100}%`);
+      highlight.style.setProperty("--cell-width", `${100 / artifact.qpet.manifest.frame.columns}%`);
+      highlight.style.setProperty("--cell-height", `${100 / artifact.qpet.manifest.frame.rows}%`);
     }
     const mobileInset = mobileCellInsetRef.current;
     if (mobileInset) {
       const insetScale = 0.8;
       mobileInset.style.backgroundPosition = `${-selection.sourceRect.x * insetScale}px ${-selection.sourceRect.y * insetScale}px`;
-      mobileInset.style.backgroundSize = `${artifact.manifest.frame.width * artifact.manifest.frame.columns * insetScale}px ${artifact.manifest.frame.height * artifact.manifest.frame.rows * insetScale}px`;
+      mobileInset.style.backgroundSize = `${artifact.qpet.manifest.frame.width * artifact.qpet.manifest.frame.columns * insetScale}px ${artifact.qpet.manifest.frame.height * artifact.qpet.manifest.frame.rows * insetScale}px`;
     }
     if (selectionTextRef.current) {
       selectionTextRef.current.textContent = `${selection.stateId} · row ${selection.row} · frame ${selection.column + 1}/${selection.frameCount} · ${selection.fps} FPS · ${selection.sourceRect.x},${selection.sourceRect.y} ${selection.sourceRect.width}×${selection.sourceRect.height}`;
     }
-  }), [artifact.manifest.frame, subscribe]);
+  }), [artifact.qpet.manifest.frame, subscribe]);
 
   useEffect(() => {
     const host = surfaceRef.current;
@@ -132,19 +132,19 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
     choreographyActiveRef.current = true;
     let delay = 0;
     for (const stateId of choreography) {
-      const state = artifact.manifest.states.find((candidate) => candidate.id === stateId);
+      const state = artifact.qpet.manifest.states.find((candidate) => candidate.id === stateId);
       if (!state) continue;
       const timer = window.setTimeout(() => selectState(stateId), delay);
       choreographyTimersRef.current.push(timer);
       delay += Math.max(240, (state.frames / state.fps) * 1_000);
     }
     choreographyTimersRef.current.push(window.setTimeout(() => {
-      selectState(artifact.manifest.states[0].id);
+      selectState(artifact.qpet.manifest.states[0].id);
       choreographyActiveRef.current = false;
       choreographyTimersRef.current = [];
     }, delay));
     return clearChoreographyTimers;
-  }, [artifact.manifest.states, choreography, clearChoreographyTimers, clearInactivity, reducedMotion, selectState]);
+  }, [artifact.qpet.manifest.states, choreography, clearChoreographyTimers, clearInactivity, reducedMotion, selectState]);
 
   useEffect(() => {
     const close = () => setXrayOpen(false);
@@ -192,8 +192,8 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
   };
 
   const surfaceStyle = {
-    "--sheet-width": `${artifact.manifest.frame.width * artifact.manifest.frame.columns}px`,
-    "--sheet-height": `${artifact.manifest.frame.height * artifact.manifest.frame.rows}px`,
+    "--sheet-width": `${artifact.qpet.manifest.frame.width * artifact.qpet.manifest.frame.columns}px`,
+    "--sheet-height": `${artifact.qpet.manifest.frame.height * artifact.qpet.manifest.frame.rows}px`,
   } as CSSProperties;
 
   return (
@@ -247,7 +247,7 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
       </p>
 
       <div className={styles.stateControls} role="group" aria-label="Nine manifest-defined Qbit states">
-        {artifact.manifest.states.map((state) => (
+        {artifact.qpet.manifest.states.map((state) => (
           <button
             type="button"
             key={state.id}
@@ -283,7 +283,7 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
 
       <p className={styles.stageFootnote}>
         {xrayOpen
-          ? `${artifact.manifest.sheet.length.toLocaleString()} verified bytes · sha256 ${artifact.sheetDigest}`
+          ? `${artifact.qpet.manifest.sheet.length.toLocaleString()} verified bytes · sha256 ${artifact.qpet.bodySha256}`
           : reducedMotion
             ? "Reduced motion · first frame of each selected state"
             : "Verified Blob frame · hold X-ray to see its source cell"}
