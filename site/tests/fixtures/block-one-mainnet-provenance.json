@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "source": "qbit mainnet RPC getblock verbosity 2",
+  "height": 1,
+  "hash": "00000000000000000be903a612b1aaaeea4a7d35be4862327957896d215e3c0f",
+  "time": 1784139898,
+  "auxpow": null,
+  "transactions": [
+    {
+      "txid": "c8d070f65bc110765e01984a0d4b2d2d33188eef98077e2196980530ab9bdaca",
+      "coinbaseScriptHex": "5100047ad0576a04059326340c80be576ac7e7543eb00000010a636b706f6f6c172f716269742d6d696e696e672d626f6f7473747261702f",
+      "outputs": [
+        {
+          "index": 0,
+          "amountBits": 21000000000,
+          "address": "qb1z8q6dsf8sla7vcn2gzxnspuzpshzrkkk80c2a67xdpea2yxkpsm4qmzhake",
+          "scriptPubKey": "52203834d824f0ff7ccc4d4811a700f04185c43b5ac77e15dd78cd0e7aa21ac186ea",
+          "scriptPubKeyType": "witness_v2_p2mr"
+        }
+      ]
+    }
+  ]
+}

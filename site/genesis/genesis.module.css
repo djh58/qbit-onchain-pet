@@ -16,6 +16,8 @@
 }
 
 .brand,
+.artifactSwitch,
+.artifactSwitch a,
 .headerLinks,
 .headerLinks button {
   align-items: center;
@@ -49,6 +51,33 @@
 
 .headerLinks {
   gap: 28px;
+}
+
+.artifactSwitch {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  gap: 2px;
+  padding: 2px;
+}
+
+.artifactSwitch a {
+  align-items: center;
+  color: var(--dim);
+  display: flex;
+  font-size: 10px;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 12px;
+  text-decoration: none;
+}
+
+.artifactSwitch a:hover {
+  color: var(--ink);
+}
+
+.artifactSwitch a[aria-current="page"] {
+  background: var(--phosphor);
+  color: var(--void);
 }
 
 .headerLinks a,
@@ -713,6 +742,11 @@
     gap: 0;
   }
 
+  .artifactSwitch a {
+    font-size: 9px;
+    padding: 0 7px;
+  }
+
   .scene {
     display: flex;
     flex-direction: column;
@@ -802,6 +836,11 @@
 }
 
 @media (max-width: 479px) {
+  .artifactSwitch a {
+    letter-spacing: 0.04em;
+    padding: 0 5px;
+  }
+
   .story {
     padding: 32px 18px 12px;
   }

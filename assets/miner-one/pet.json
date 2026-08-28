@@ -1,0 +1,14 @@
+{
+  "id": "miner-one",
+  "displayName": "Miner One",
+  "description": "The honorary QPET for the miner of Qbit mainnet block 1 — gold #1 hardhat, trusty pickaxe, and the bootstrap spirit that extended the chain.",
+  "spritesheetPath": "spritesheet.webp",
+  "kind": "object",
+  "author": "dan",
+  "frame": {
+    "width": 192,
+    "height": 208,
+    "columns": 8,
+    "rows": 9
+  }
+}

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { EXPLORER_ORIGIN } from "../genesis/model/facts";
+import { ARTIFACTS } from "../genesis/model/facts";
 import "./globals.css";
 
 const CANONICAL_SITE_ORIGIN = "https://qbit-onchain-pet.thedanhepworth.chatgpt.site";
@@ -20,7 +20,7 @@ export function generateMetadata(): Metadata {
 
   return {
     title: "Qbit Genesis — Bytes. Then being.",
-    description: "Recover and verify the animated Qbit mascot directly from one Qbit mainnet transaction.",
+    description: "Recover and verify the original Qbit and Miner One directly from their Qbit mainnet transactions.",
     icons: {
       icon: [
         { url: "/favicon.ico?v=2", type: "image/x-icon" },
@@ -30,24 +30,28 @@ export function generateMetadata(): Metadata {
     },
     openGraph: {
       title: "Qbit Genesis — Bytes. Then being.",
-      description: "One mainnet transaction; its ID and inscription hashes verified before Qbit animates in your browser.",
+      description: "Two mainnet QPETs; their transaction IDs and inscription hashes verified before either animates.",
       type: "website",
-      images: [{ url: socialImage, alt: "Qbit recovered from one verified mainnet transaction" }],
+      images: [{ url: socialImage, alt: "Original Qbit and Miner One, two verified on-chain QPETs" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "Qbit Genesis — Bytes. Then being.",
-      description: "One mainnet transaction; its ID and inscription hashes verified before Qbit animates in your browser.",
+      description: "Two mainnet QPETs; their transaction IDs and inscription hashes verified before either animates.",
       images: [socialImage],
     },
   };
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const explorerOrigins = [...new Set(Object.values(ARTIFACTS).map((artifact) => artifact.explorerOrigin))];
+
   return (
     <html lang="en">
       <head>
-        <link rel="preconnect" href={EXPLORER_ORIGIN} crossOrigin="anonymous" />
+        {explorerOrigins.map((origin) => (
+          <link key={origin} rel="preconnect" href={origin} crossOrigin="anonymous" />
+        ))}
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
     </html>

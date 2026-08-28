@@ -38,6 +38,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 export function SpriteStage({ artifact, reducedMotion, choreography, onManualState }: SpriteStageProps) {
+  const petName = artifact.qpet.manifest.displayName;
   const surfaceRef = useRef<HTMLDivElement>(null);
   const sheetImageRef = useRef(artifact.sheetImage);
   const highlightRef = useRef<HTMLSpanElement>(null);
@@ -201,7 +202,7 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
       <button
         type="button"
         className={styles.spriteInteraction}
-        aria-label="Qbit animation. Arrow keys run, Up jumps, and Enter waves."
+        aria-label={`${petName} animation. Arrow keys run, Up jumps, and Enter waves.`}
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft") issueManualCommand("running-left");
           else if (event.key === "ArrowRight") issueManualCommand("running-right");
@@ -227,7 +228,7 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
           className={`${styles.spriteSurface} ${xrayOpen ? styles.spriteXray : styles.spriteCrop}`}
           style={surfaceStyle}
           role="img"
-          aria-label={xrayOpen ? "The verified Qbit spritesheet with the current animation cell highlighted" : `Qbit performing ${activeStateId}`}
+          aria-label={xrayOpen ? `The verified ${petName} spritesheet with the current animation cell highlighted` : `${petName} performing ${activeStateId}`}
           data-media-origin="verified-blob"
         >
           <span ref={highlightRef} className={styles.xrayHighlight} aria-hidden="true" />
@@ -246,7 +247,7 @@ export function SpriteStage({ artifact, reducedMotion, choreography, onManualSta
         <span ref={selectionTextRef}>idle · row 0 · frame 1</span>
       </p>
 
-      <div className={styles.stateControls} role="group" aria-label="Nine manifest-defined Qbit states">
+      <div className={styles.stateControls} role="group" aria-label={`Nine manifest-defined ${petName} states`}>
         {artifact.qpet.manifest.states.map((state) => (
           <button
             type="button"

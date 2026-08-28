@@ -5,7 +5,7 @@ import {
   type QpetError,
   type QpetState,
 } from "qscriptions";
-import { EXPLORER_ORIGIN, GENESIS } from "../model/facts";
+import { GENESIS_ARTIFACT, type QpetDefinition } from "../model/facts";
 import type { ProofStage, RecoveryFailure } from "../model/recovery";
 import type { ChainEvidence, ExplorerStatus, RecoveredGenesis } from "../model/types";
 
@@ -19,7 +19,6 @@ const MAX_INPUTS = 1_024;
 const MAX_OUTPUTS = 1_024;
 const ATTESTATION_TIMEOUT_MS = 2_000;
 const HEX_64 = /^[0-9a-f]{64}$/;
-const GENESIS_CONTENT_ID = `qscr:sha256:${GENESIS.envelopeSha256}` as const;
 const GENESIS_STATES: readonly QpetState[] = Object.freeze([
   Object.freeze({ id: "idle", row: 0, frames: 6, fps: 6, loop: true }),
   Object.freeze({ id: "running-right", row: 1, frames: 8, fps: 12, loop: true }),
@@ -46,6 +45,7 @@ type EsploraOutput = Readonly<{
   value: number;
   scriptpubkey: string;
   scriptpubkeyType: string;
+  scriptpubkeyAddress?: string | null;
 }>;
 
 export type ValidatedExplorerTransaction = Readonly<{
@@ -137,10 +137,18 @@ export function validateExplorerTransaction(value: unknown): ValidatedExplorerTr
     if (typeof output.scriptpubkey_type !== "string" || output.scriptpubkey_type.length > 64) {
       fail("malformed-transaction", stage, false);
     }
+    if (
+      output.scriptpubkey_address !== undefined
+      && output.scriptpubkey_address !== null
+      && (typeof output.scriptpubkey_address !== "string" || output.scriptpubkey_address.length > 128)
+    ) {
+      fail("malformed-transaction", stage, false);
+    }
     return Object.freeze({
       value: expectUnsignedInteger(output.value, stage, Number.MAX_SAFE_INTEGER),
       scriptpubkey: expectHex(output.scriptpubkey, stage),
       scriptpubkeyType: output.scriptpubkey_type,
+      scriptpubkeyAddress: typeof output.scriptpubkey_address === "string" ? output.scriptpubkey_address : null,
     });
   });
   const rawStatus = expectObject(transaction.status, stage);
@@ -274,38 +282,48 @@ function stateMatches(candidate: QpetState, expected: QpetState): boolean {
     candidate.loop === expected.loop;
 }
 
-export function assertGenesisEnvelopeIdentity(qpet: QpetArtifact): void {
+export function assertGenesisEnvelopeIdentity(
+  qpet: QpetArtifact,
+  definition: QpetDefinition = GENESIS_ARTIFACT,
+): void {
+  const facts = definition.facts;
+  const contentId = `qscr:sha256:${facts.envelopeSha256}`;
   if (
     qpet.wireFormat !== "QPET" ||
     qpet.wireVersion !== 1 ||
     qpet.profile !== "legacy/qpet-v1" ||
-    qpet.contentId !== GENESIS_CONTENT_ID ||
-    qpet.hashes.envelopeSha256 !== GENESIS.envelopeSha256 ||
-    qpet.envelopeBytes.byteLength !== GENESIS.envelopeLength
+    qpet.contentId !== contentId ||
+    qpet.hashes.envelopeSha256 !== facts.envelopeSha256 ||
+    qpet.envelopeBytes.byteLength !== facts.envelopeLength
   ) {
     fail("hash-mismatch", "hashing-envelope", false);
   }
 }
 
-export function assertGenesisBodyIdentity(qpet: QpetArtifact): void {
+export function assertGenesisBodyIdentity(
+  qpet: QpetArtifact,
+  definition: QpetDefinition = GENESIS_ARTIFACT,
+): void {
+  const facts = definition.facts;
+  const expectedManifest = definition.manifestIdentity;
   const { frame, sheet, states } = qpet.manifest;
   if (
-    qpet.bodyLength !== GENESIS.sheetLength ||
-    qpet.bodySha256 !== GENESIS.sheetSha256 ||
-    qpet.hashes.sheetSha256 !== GENESIS.sheetSha256 ||
-    qpet.bodyBytes.byteLength !== GENESIS.sheetLength ||
+    qpet.bodyLength !== facts.sheetLength ||
+    qpet.bodySha256 !== facts.sheetSha256 ||
+    qpet.hashes.sheetSha256 !== facts.sheetSha256 ||
+    qpet.bodyBytes.byteLength !== facts.sheetLength ||
     qpet.manifest.format !== "codex-pet-v1" ||
-    qpet.manifest.id !== "qbit" ||
-    qpet.manifest.displayName !== "Qbit" ||
-    qpet.manifest.kind !== "object" ||
-    qpet.manifest.author !== "dan" ||
-    frame.width !== GENESIS.frameWidth ||
-    frame.height !== GENESIS.frameHeight ||
-    frame.columns !== GENESIS.sheetWidth / GENESIS.frameWidth ||
-    frame.rows !== GENESIS.sheetHeight / GENESIS.frameHeight ||
+    qpet.manifest.id !== expectedManifest.id ||
+    qpet.manifest.displayName !== expectedManifest.displayName ||
+    qpet.manifest.kind !== expectedManifest.kind ||
+    qpet.manifest.author !== expectedManifest.author ||
+    frame.width !== facts.frameWidth ||
+    frame.height !== facts.frameHeight ||
+    frame.columns !== facts.sheetWidth / facts.frameWidth ||
+    frame.rows !== facts.sheetHeight / facts.frameHeight ||
     sheet.contentType !== "image/webp" ||
-    sheet.length !== GENESIS.sheetLength ||
-    sheet.sha256 !== GENESIS.sheetSha256 ||
+    sheet.length !== facts.sheetLength ||
+    sheet.sha256 !== facts.sheetSha256 ||
     states.length !== GENESIS_STATES.length ||
     !states.every((state, index) => stateMatches(state, GENESIS_STATES[index]!))
   ) {
@@ -353,8 +371,12 @@ async function cancelResponseBody(response: Response): Promise<void> {
   }
 }
 
-async function fetchTransaction(fetcher: FetchLike, signal: AbortSignal): Promise<unknown> {
-  const url = `${EXPLORER_ORIGIN}/api/tx/${GENESIS.transactionId}`;
+async function fetchTransaction(
+  fetcher: FetchLike,
+  signal: AbortSignal,
+  definition: QpetDefinition,
+): Promise<unknown> {
+  const url = `${definition.explorerOrigin}/api/tx/${definition.facts.transactionId}`;
   for (let attempt = 0; ; attempt += 1) {
     try {
       const response = await fetcher(url, {
@@ -395,11 +417,13 @@ export async function fetchBlockHashAttestation(
   status: ExplorerStatus,
   lifecycleSignal?: AbortSignal,
   timeoutMs = ATTESTATION_TIMEOUT_MS,
+  definition: QpetDefinition = GENESIS_ARTIFACT,
 ): Promise<string | null> {
+  const facts = definition.facts;
   if (
     !status.confirmed ||
-    status.blockHeight !== GENESIS.blockHeight ||
-    status.blockHash !== GENESIS.blockHash
+    status.blockHeight !== facts.blockHeight ||
+    status.blockHash !== facts.blockHash
   ) {
     return null;
   }
@@ -409,7 +433,7 @@ export async function fetchBlockHashAttestation(
   if (lifecycleSignal?.aborted) abort();
   else lifecycleSignal?.addEventListener("abort", abort, { once: true });
   try {
-    const response = await fetcher(`${EXPLORER_ORIGIN}/api/block-height/${GENESIS.blockHeight}`, {
+    const response = await fetcher(`${definition.explorerOrigin}/api/block-height/${facts.blockHeight}`, {
       cache: "no-store",
       credentials: "omit",
       headers: { Accept: "text/plain" },
@@ -453,23 +477,48 @@ export async function fetchBlockHashAttestation(
   }
 }
 
-function evidenceFor(status: ExplorerStatus, attestedBlockHash: string | null): ChainEvidence {
+function evidenceFor(
+  status: ExplorerStatus,
+  attestedBlockHash: string | null,
+  definition: QpetDefinition,
+): ChainEvidence {
+  const facts = definition.facts;
   const exactLocator =
     status.confirmed &&
-    status.blockHeight === GENESIS.blockHeight &&
-    status.blockHash === GENESIS.blockHash &&
-    attestedBlockHash === GENESIS.blockHash;
+    status.blockHeight === facts.blockHeight &&
+    status.blockHash === facts.blockHash &&
+    attestedBlockHash === facts.blockHash;
   return exactLocator
     ? Object.freeze({
         status: "confirmed" as const,
-        sourceId: GENESIS.sourceId,
-        detail: `confirmed, reported by ${GENESIS.sourceId}`,
+        sourceId: facts.sourceId,
+        detail: `confirmed, reported by ${facts.sourceId}`,
       })
     : Object.freeze({
         status: "unknown" as const,
-        sourceId: GENESIS.sourceId,
+        sourceId: facts.sourceId,
         detail: "bytes verified; current block status unavailable",
       });
+}
+
+/** @internal Exact honorary-output trust check, exported for negative tests. */
+export function assertRecipientCommitment(
+  transaction: ValidatedExplorerTransaction,
+  definition: QpetDefinition,
+  stage: ProofStage,
+): void {
+  const expected = definition.facts.recipient;
+  if (!expected) return;
+  const matches = transaction.vout.filter((output) => (
+    output.value === expected.amountBits
+    && output.scriptpubkey === expected.scriptPubKey
+    && output.scriptpubkeyType === expected.scriptPubKeyType
+    && output.scriptpubkeyAddress === expected.address
+  ));
+  const output = transaction.vout[expected.outputIndex];
+  if (!output || matches.length !== 1 || output !== matches[0]) {
+    fail("recipient-mismatch", stage, false);
+  }
 }
 
 export async function recoverGenesis(
@@ -477,22 +526,23 @@ export async function recoverGenesis(
   reportStage: StageReporter,
   fetcher: FetchLike = globalThis.fetch,
   lifecycleSignal?: AbortSignal,
+  definition: QpetDefinition = GENESIS_ARTIFACT,
 ): Promise<RecoveryResult> {
   let stage: ProofStage = "fetching";
   try {
-    const raw = await fetchTransaction(fetcher, signal);
+    const raw = await fetchTransaction(fetcher, signal, definition);
     stage = "locating-output";
     reportStage(stage);
     const transaction = validateExplorerTransaction(raw);
-    if (transaction.txid !== GENESIS.transactionId) fail("txid-mismatch", stage, false);
+    const facts = definition.facts;
+    if (transaction.txid !== facts.transactionId) fail("txid-mismatch", stage, false);
     const identity = await transactionId(transaction);
-    if (identity.id !== GENESIS.transactionId) fail("txid-mismatch", stage, false);
-    // validateExplorerTransaction requires at least one output, and the
-    // build-time Genesis facts require outputIndex === 0.
-    const output = transaction.vout[GENESIS.outputIndex]!;
-    if (output.value !== 0 || output.scriptpubkeyType !== "op_return") {
+    if (identity.id !== facts.transactionId) fail("txid-mismatch", stage, false);
+    const output = transaction.vout[facts.outputIndex];
+    if (!output || output.value !== 0 || output.scriptpubkeyType !== "op_return") {
       fail("unsupported-script", stage, false);
     }
+    assertRecipientCommitment(transaction, definition, stage);
 
     stage = "decoding-envelope";
     reportStage(stage);
@@ -507,25 +557,31 @@ export async function recoverGenesis(
 
     stage = "hashing-envelope";
     reportStage(stage);
-    assertGenesisEnvelopeIdentity(qpet);
+    assertGenesisEnvelopeIdentity(qpet, definition);
 
     stage = "hashing-sheet";
     reportStage(stage);
-    assertGenesisBodyIdentity(qpet);
+    assertGenesisBodyIdentity(qpet, definition);
 
     // This locator cross-check is optional evidence, not part of byte
     // validity. It owns a short timeout and listens only to attempt teardown;
     // the required fetch deadline cannot poison verified media decode.
     stage = "attesting-block";
     reportStage(stage);
-    const attestedBlockHash = await fetchBlockHashAttestation(fetcher, transaction.status, lifecycleSignal);
+    const attestedBlockHash = await fetchBlockHashAttestation(
+      fetcher,
+      transaction.status,
+      lifecycleSignal,
+      ATTESTATION_TIMEOUT_MS,
+      definition,
+    );
     return {
       ok: true,
       value: Object.freeze({
         qpet,
         serializedTransactionLength: identity.bytes.byteLength,
         status: transaction.status,
-        chainEvidence: evidenceFor(transaction.status, attestedBlockHash),
+        chainEvidence: evidenceFor(transaction.status, attestedBlockHash, definition),
       }),
     };
   } catch (error) {

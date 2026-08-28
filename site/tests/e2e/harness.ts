@@ -10,6 +10,12 @@ export const BLOCK_HASH = "0000000000000000893a81d2e44e1e16cbaf59cd58f901b6be296
 export const EXPLORER_ORIGIN = "https://mempool.qbit.org";
 export const TRANSACTION_URL = `${EXPLORER_ORIGIN}/api/tx/${TRANSACTION_ID}`;
 export const BLOCK_URL = `${EXPLORER_ORIGIN}/api/block-height/${BLOCK_HEIGHT}`;
+export const HONORARY_TRANSACTION_ID = "53dd2d8982bea1dd1676f6506a497a31c14a81aad21639d019e3658150f231af";
+export const HONORARY_BLOCK_HEIGHT = 63_174;
+export const HONORARY_BLOCK_HASH = "000000000000000027a132d416c0d5dfd8a8b6bca42c0b6548a6d3ec66b4a100";
+export const HONORARY_EXPLORER_ORIGIN = EXPLORER_ORIGIN;
+export const HONORARY_TRANSACTION_URL = `${HONORARY_EXPLORER_ORIGIN}/api/tx/${HONORARY_TRANSACTION_ID}`;
+export const HONORARY_BLOCK_URL = `${HONORARY_EXPLORER_ORIGIN}/api/block-height/${HONORARY_BLOCK_HEIGHT}`;
 export const STATE_IDS = [
   "idle",
   "running-right",
@@ -35,6 +41,16 @@ if (fixtureDigest !== "48f39512954fdf8b6b25c156a2971ffdd413dfe0af80c66c23b187a60
   throw new Error(`The exact pinned Esplora fixture changed (${fixtureDigest}).`);
 }
 
+const honoraryFixturePath = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../fixtures/miner-one-mainnet-esplora.json",
+);
+export const honoraryTransactionFixtureText = readFileSync(honoraryFixturePath, "utf8");
+const honoraryFixtureDigest = createHash("sha256").update(honoraryTransactionFixtureText).digest("hex");
+if (honoraryFixtureDigest !== "75f746073f7760924cad5aa7921a1a61136f7272b48789748f3ae424b59bdbfb") {
+  throw new Error(`The exact honorary Esplora fixture changed (${honoraryFixtureDigest}).`);
+}
+
 type PageHealth = Readonly<{
   consoleErrors: string[];
   pageErrors: string[];
@@ -58,7 +74,8 @@ export const test = base.extend<{ pageHealth: PageHealth }>({
     });
     page.on("pageerror", (error) => health.pageErrors.push(error.message));
     page.on("requestfailed", (request) => {
-      if (!request.url().startsWith(EXPLORER_ORIGIN)) {
+      const url = request.url();
+      if (!url.startsWith(EXPLORER_ORIGIN)) {
         health.failedLocalRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText ?? "failed"}`);
       }
     });
@@ -137,6 +154,28 @@ export async function installChainRoutes(
   return stats;
 }
 
+export async function installHonoraryChainRoutes(page: Page): Promise<ChainRouteStats> {
+  const stats: ChainRouteStats = { transactionRequests: 0, blockRequests: 0, unexpectedExplorerRequests: [] };
+  await page.route(`${HONORARY_EXPLORER_ORIGIN}/**`, async (route) => {
+    const url = route.request().url();
+    if (url === HONORARY_TRANSACTION_URL) {
+      stats.transactionRequests += 1;
+      await fulfillTransaction(route, honoraryTransactionFixtureText);
+      return;
+    }
+    if (url === HONORARY_BLOCK_URL) {
+      stats.blockRequests += 1;
+      await fulfillBlockHash(route, HONORARY_BLOCK_HASH);
+      return;
+    }
+    // Both artifacts use the mainnet origin. This handler is registered after
+    // the OG handler, so fall through for its exact URLs instead of shadowing
+    // them with a second origin-wide catch-all.
+    await route.fallback();
+  });
+  return stats;
+}
+
 export async function installBlobProbe(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const target = globalThis as typeof globalThis & {
@@ -161,8 +200,8 @@ export function mascotSurface(page: Page) {
   return page.locator('[data-media-origin="verified-blob"]');
 }
 
-export function spriteInteraction(page: Page) {
-  return page.getByRole("button", { name: "Qbit animation. Arrow keys run, Up jumps, and Enter waves." });
+export function spriteInteraction(page: Page, petName = "Qbit") {
+  return page.getByRole("button", { name: `${petName} animation. Arrow keys run, Up jumps, and Enter waves.` });
 }
 
 export function xrayControl(page: Page) {
@@ -173,11 +212,15 @@ export function frameDescription(page: Page) {
   return spriteInteraction(page).locator("xpath=following-sibling::p[1]");
 }
 
-export async function expectReady(page: Page, confirmation: "confirmed" | "degraded" = "confirmed"): Promise<void> {
+export async function expectReady(
+  page: Page,
+  confirmation: "confirmed" | "degraded" = "confirmed",
+  recoveredLabel = "Recovered from Qbit mainnet",
+): Promise<void> {
   await expect(mascotSurface(page)).toHaveCount(1);
   await expect(page.locator('[data-media-origin="verified-blob"] img')).toHaveCount(1);
   await expect(page.getByRole("status")).toContainText(
-    confirmation === "confirmed" ? "Recovered from Qbit mainnet" : "Inscription bytes recovered",
+    confirmation === "confirmed" ? recoveredLabel : "Inscription bytes recovered",
   );
 }
 

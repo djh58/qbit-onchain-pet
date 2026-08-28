@@ -22,6 +22,7 @@ export type FailureCode =
   | "malformed-transaction"
   | "txid-mismatch"
   | "unsupported-script"
+  | "recipient-mismatch"
   | "invalid-envelope"
   | "hash-mismatch"
   | "media-invalid"
@@ -153,7 +154,9 @@ export function failureCopy(failure?: RecoveryFailure): Readonly<{ title: string
     case "txid-mismatch":
       return { title: "Transaction identity did not match.", detail: "The response could not be reconstructed into the requested transaction ID, so the stage stays empty." };
     case "unsupported-script":
-      return { title: "The Genesis output was not found.", detail: "Output zero did not contain the expected single QPET data push." };
+      return { title: "The pinned QPET output was not found.", detail: "The selected output did not contain the expected single QPET data push." };
+    case "recipient-mismatch":
+      return { title: "The recipient proof did not match.", detail: "The honorary output was not accepted, so no trusted media was created." };
     case "invalid-envelope":
       return { title: "The QPET envelope was invalid.", detail: "The recovered bytes did not satisfy the frozen QPET v1 structure and manifest rules." };
     case "hash-mismatch":

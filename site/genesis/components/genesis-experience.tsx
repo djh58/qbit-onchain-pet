@@ -4,13 +4,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useGenesis } from "../hooks/use-genesis";
 import { useReducedMotion } from "../hooks/use-reduced-motion";
 import { decodeChoreography, encodeChoreography, observeChoreographyFragment } from "../model/choreography";
-import { CODEX_PETS_URL, EXPLORER_ORIGIN, GENESIS, SOURCE_REPOSITORY } from "../model/facts";
+import { ARTIFACTS, artifactDefinition, SOURCE_REPOSITORY, type ArtifactId } from "../model/facts";
 import { failureCopy, PROOF_STAGE_LABELS, PROOF_STAGES } from "../model/recovery";
 import { buildGenesisShareUrl, createShareAttemptGuard, shareGenesis, type ShareOutcome } from "../model/share";
 import { SpriteStage } from "./sprite-stage";
 import styles from "../genesis.module.css";
 
 const EMPTY_SEQUENCE: readonly string[] = Object.freeze([]);
+const BITS_PER_QBT = 100_000_000;
 
 function shortHash(hash: string, edge = 8): string {
   return `${hash.slice(0, edge)}…${hash.slice(-edge)}`;
@@ -27,8 +28,18 @@ function outcomeLabel(outcome: ShareOutcome | null): string {
   }
 }
 
-export function GenesisExperience() {
-  const { state, retry } = useGenesis();
+function formatQbtBits(bits: number): string {
+  const whole = Math.floor(bits / BITS_PER_QBT);
+  const fraction = String(bits % BITS_PER_QBT).padStart(8, "0");
+  return `${whole}.${fraction} QBT`;
+}
+
+export function GenesisExperience({ artifactId = "qbit" }: Readonly<{ artifactId?: ArtifactId }>) {
+  const definition = artifactDefinition(artifactId);
+  const facts = definition.facts;
+  const presentation = definition.presentation;
+  const networkLabel = facts.network === "main" ? "mainnet" : facts.network;
+  const { state, retry } = useGenesis(definition);
   const reducedMotion = useReducedMotion();
   const [recordedStates, setRecordedStates] = useState<readonly string[]>(EMPTY_SEQUENCE);
   const [shareOutcome, setShareOutcome] = useState<ShareOutcome | null>(null);
@@ -88,7 +99,7 @@ export function GenesisExperience() {
         clipboardWrite,
         secureContext: window.isSecureContext,
         manualAvailable: true,
-      });
+      }, { title: presentation.shareTitle, text: presentation.shareText });
     } finally {
       if (shareGuardRef.current.isCurrent(shareAttempt)) sharingRef.current = false;
     }
@@ -112,7 +123,7 @@ export function GenesisExperience() {
     : isFailed
       ? failure.title
       : state.stage === "idle"
-        ? "No verified bytes. No Qbit."
+        ? `No verified bytes. No ${definition.manifestIdentity.displayName}.`
         : `Now: ${PROOF_STAGE_LABELS[state.stage as keyof typeof PROOF_STAGE_LABELS]}`;
 
   return (
@@ -120,8 +131,19 @@ export function GenesisExperience() {
       <header className={styles.header}>
         <a className={styles.brand} href="https://qbit.org" target="_blank" rel="noreferrer" aria-label="Qbit homepage">
           <span className={styles.brandMark} aria-hidden="true">Q</span>
-          <span>Qbit / Genesis 001</span>
+          <span>{presentation.brandLabel}</span>
         </a>
+        <nav className={styles.artifactSwitch} aria-label="Choose an on-chain QPET">
+          {Object.values(ARTIFACTS).map((candidate) => (
+            <a
+              key={candidate.artifactId}
+              href={candidate.route}
+              aria-current={candidate.artifactId === artifactId ? "page" : undefined}
+            >
+              {candidate.presentation.navLabel}
+            </a>
+          ))}
+        </nav>
         <nav className={styles.headerLinks} aria-label="Page links">
           <a href={SOURCE_REPOSITORY} target="_blank" rel="noreferrer">Source ↗</a>
           <button type="button" disabled={!isReady} onClick={() => void handleShare()}>
@@ -130,23 +152,28 @@ export function GenesisExperience() {
         </nav>
       </header>
 
-      <section className={styles.scene} aria-labelledby="genesis-title">
+      <section className={styles.scene} aria-labelledby="qpet-title">
         <div className={styles.story}>
-          <p className={styles.coordinate}>Qbit mainnet · block {GENESIS.blockHeight.toLocaleString()}</p>
-          <h1 id="genesis-title">Bytes.<br />Then being.</h1>
-          <p className={styles.lede}>Your browser recovers one mainnet transaction, recomputes its ID, verifies every inscription byte, and only then gives Qbit a body.</p>
+          <p className={styles.coordinate}>{presentation.coordinate}</p>
+          <h1 id="qpet-title">{presentation.titleLines[0]}<br />{presentation.titleLines[1]}</h1>
+          <p className={styles.lede}>{presentation.lede}</p>
 
           <div className={`${styles.status} ${isFailed ? styles.statusFailed : isReady && !chainConfirmed ? styles.statusWarning : ""}`} role="status" aria-live="polite">
-            <strong>{isReady ? chainConfirmed ? "✓ Recovered from Qbit mainnet" : "✓ Inscription bytes recovered" : proofLine}</strong>
+            <strong>{isReady ? chainConfirmed ? `✓ ${presentation.recoveredLabel}` : "✓ Inscription bytes recovered" : proofLine}</strong>
             <span>
               {isReady ? `byte-perfect envelope + sheet · ${state.artifact?.chainEvidence.detail}` : isFailed ? failure.detail : "Every line reflects work the browser has actually reached."}
             </span>
           </div>
 
-          <a className={styles.primaryAction} href={CODEX_PETS_URL} target="_blank" rel="noreferrer">
+          <a
+            className={styles.primaryAction}
+            href={presentation.primaryAction.href}
+            target={presentation.primaryAction.external ? "_blank" : undefined}
+            rel={presentation.primaryAction.external ? "noreferrer" : undefined}
+          >
             <span>
-              <strong>Get Qbit for your coding agent</strong>
-              <small>https://codex-pets.net/#/pets/qbit</small>
+              <strong>{presentation.primaryAction.label}</strong>
+              <small>{presentation.primaryAction.detail}</small>
             </span>
             <span aria-hidden="true">↗</span>
           </a>
@@ -158,13 +185,14 @@ export function GenesisExperience() {
             </div>
           ) : null}
           {decodedChoreography && !decodedChoreography.ok && decodedChoreography.reason !== "absent" ? (
-            <p className={styles.choreographyNotice}>The choreography in this URL was invalid and was ignored. Qbit still recovered normally.</p>
+            <p className={styles.choreographyNotice}>The choreography in this URL was invalid and was ignored. The QPET still recovered normally.</p>
           ) : null}
         </div>
 
         <div className={`${styles.stage} ${isReady ? styles.awakening : ""}`}>
           {isReady && state.artifact ? (
             <SpriteStage
+              key={artifactId}
               artifact={state.artifact}
               reducedMotion={reducedMotion}
               choreography={choreography}
@@ -178,13 +206,13 @@ export function GenesisExperience() {
               <button type="button" onClick={retry}>Retry chain recovery</button>
               <details>
                 <summary>Verify with your own node</summary>
-                <code>python3 qpet.py view {GENESIS.transactionId} --out /tmp/qbit-pet.html</code>
+                <code>python3 qpet.py --chain {facts.network} view {facts.transactionId} --out /tmp/qbit-pet.html</code>
               </details>
             </div>
           ) : state.stage === "idle" || state.stage === "fetching" ? (
             <div className={styles.absence}>
               <div className={styles.emptyFrame} aria-hidden="true" />
-              <p>No verified bytes. No Qbit.</p>
+              <p>No verified bytes. No {definition.manifestIdentity.displayName}.</p>
             </div>
           ) : (
             <div className={styles.recoveryLedger} aria-label="Chain recovery steps">
@@ -195,16 +223,16 @@ export function GenesisExperience() {
                   return <li key={step} data-state={done ? "done" : active ? "active" : "pending"}>{done ? "✓" : active ? "→" : "·"} {PROOF_STAGE_LABELS[step]}</li>;
                 })}
               </ol>
-              <p>No verified bytes. No Qbit.</p>
+              <p>No verified bytes. No {definition.manifestIdentity.displayName}.</p>
             </div>
           )}
         </div>
       </section>
 
-      <section className={styles.proofRail} aria-label="Genesis proof summary">
+      <section className={styles.proofRail} aria-label={`${definition.manifestIdentity.displayName} proof summary`}>
         <div><span>Proof</span><strong className={isReady ? styles.good : ""}>{isReady ? "byte-perfect ✓" : isFailed ? "not verified" : "recovering"}</strong></div>
-        <div><span>Transaction</span><a href={`${EXPLORER_ORIGIN}/tx/${GENESIS.transactionId}`} target="_blank" rel="noreferrer">{shortHash(GENESIS.transactionId)} ↗</a></div>
-        <div><span>Content</span><strong>{GENESIS.envelopeLength.toLocaleString()} B envelope<br />{GENESIS.sheetLength.toLocaleString()} B sheet</strong></div>
+        <div><span>Transaction</span><a href={`${definition.explorerOrigin}/tx/${facts.transactionId}`} target="_blank" rel="noreferrer">{shortHash(facts.transactionId)} ↗</a></div>
+        <div><span>Content</span><strong>{facts.envelopeLength.toLocaleString()} B envelope<br />{facts.sheetLength.toLocaleString()} B sheet</strong></div>
         <div><span>Inspect</span><button type="button" onClick={() => {
           if (!receiptRef.current) return;
           receiptRef.current.open = true;
@@ -215,25 +243,43 @@ export function GenesisExperience() {
       <details ref={receiptRef} className={styles.receipt} id="chain-receipt">
         <summary>Complete chain receipt</summary>
         <dl>
-          <div><dt>Network</dt><dd>Qbit mainnet</dd></div>
-          <div><dt>Genesis hash</dt><dd>{GENESIS.networkGenesisHash}</dd></div>
-          <div><dt>Transaction</dt><dd><a href={`${EXPLORER_ORIGIN}/tx/${GENESIS.transactionId}`} target="_blank" rel="noreferrer">{GENESIS.transactionId} ↗</a></dd></div>
+          <div><dt>Network</dt><dd>Qbit {networkLabel}</dd></div>
+          <div><dt>Network genesis hash</dt><dd>{facts.networkGenesisHash}</dd></div>
+          <div><dt>Transaction</dt><dd><a href={`${definition.explorerOrigin}/tx/${facts.transactionId}`} target="_blank" rel="noreferrer">{facts.transactionId} ↗</a></dd></div>
           <div><dt>Transaction identity</dt><dd>{state.artifact ? `${state.artifact.serializedTransactionLength.toLocaleString()} serialized bytes · ID recomputed` : "not yet verified"}</dd></div>
-          <div><dt>Output</dt><dd>{GENESIS.outputIndex}</dd></div>
-          <div><dt>Block</dt><dd><a href={`${EXPLORER_ORIGIN}/block/${GENESIS.blockHash}`} target="_blank" rel="noreferrer">{GENESIS.blockHeight.toLocaleString()} · {GENESIS.blockHash} ↗</a></dd></div>
+          <div><dt>Output</dt><dd>{facts.outputIndex}</dd></div>
+          <div><dt>Block</dt><dd><a href={`${definition.explorerOrigin}/block/${facts.blockHash}`} target="_blank" rel="noreferrer">{facts.blockHeight.toLocaleString()} · {facts.blockHash} ↗</a></dd></div>
           <div><dt>Envelope</dt><dd>{state.artifact ? `${state.artifact.qpet.envelopeBytes.byteLength.toLocaleString()} bytes · QPET v1 decoded` : "not yet verified"}</dd></div>
           <div><dt>Manifest</dt><dd>{state.artifact ? `${state.artifact.qpet.manifest.format} · ${state.artifact.qpet.manifest.id} · ${state.artifact.qpet.manifest.states.length} states` : "not yet verified"}</dd></div>
-          <div><dt>Image</dt><dd>{state.artifact ? `${state.artifact.qpet.manifest.sheet.contentType} · ${GENESIS.sheetWidth}×${GENESIS.sheetHeight} decoded` : "not yet verified"}</dd></div>
-          <div><dt>Envelope SHA-256</dt><dd>{GENESIS.envelopeSha256}</dd></div>
-          <div><dt>Sheet SHA-256</dt><dd>{GENESIS.sheetSha256}</dd></div>
+          <div><dt>Image</dt><dd>{state.artifact ? `${state.artifact.qpet.manifest.sheet.contentType} · ${facts.sheetWidth}×${facts.sheetHeight} decoded` : "not yet verified"}</dd></div>
+          <div><dt>Envelope SHA-256</dt><dd>{facts.envelopeSha256}</dd></div>
+          <div><dt>Sheet SHA-256</dt><dd>{facts.sheetSha256}</dd></div>
           <div><dt>Chain evidence</dt><dd>{state.artifact?.chainEvidence.detail ?? "not yet available"}</dd></div>
+          {facts.recipient ? (
+            <>
+              <div><dt>Recipient commitment</dt><dd>{state.artifact ? "exact output index + amount + script verified ✓" : "not yet verified"}</dd></div>
+              <div><dt>Committed output</dt><dd>{facts.recipient.outputIndex} · {formatQbtBits(facts.recipient.amountBits)} · {facts.recipient.scriptPubKeyType}</dd></div>
+              <div><dt>Explorer-decoded address</dt><dd><a href={`${definition.explorerOrigin}/address/${facts.recipient.address}`} target="_blank" rel="noreferrer">{facts.recipient.address} ↗</a></dd></div>
+              <div><dt>Recipient script</dt><dd>{facts.recipient.scriptPubKey}</dd></div>
+            </>
+          ) : null}
+          {definition.honor ? (
+            <>
+              <div><dt>Honors</dt><dd>the miner of Qbit mainnet block 1</dd></div>
+              <div><dt>Block 1 hash</dt><dd><a href={`${ARTIFACTS.qbit.explorerOrigin}/block/${definition.honor.blockHash}`} target="_blank" rel="noreferrer">{definition.honor.blockHash} ↗</a></dd></div>
+              <div><dt>Block 1 coinbase</dt><dd><a href={`${ARTIFACTS.qbit.explorerOrigin}/tx/${definition.honor.coinbaseTransactionId}`} target="_blank" rel="noreferrer">{definition.honor.coinbaseTransactionId} ↗</a></dd></div>
+              <div><dt>Coinbase tags</dt><dd>{definition.honor.coinbaseTags.join(" · ")}</dd></div>
+              <div><dt>Payout address</dt><dd>{definition.honor.payoutAddress}</dd></div>
+              <div><dt>Block timestamp</dt><dd>{definition.honor.blockTimeIso}</dd></div>
+            </>
+          ) : null}
           <div><dt>Source code</dt><dd><a href={SOURCE_REPOSITORY} target="_blank" rel="noreferrer">github.com/djh58/qbit-onchain-pet ↗</a></dd></div>
         </dl>
       </details>
 
       <footer className={styles.footer}>
-        <p>{isReady ? "Qbit Genesis 001 · recovered in your browser" : "Qbit Genesis 001 · verification happens in your browser"}</p>
-        <div><a href={`${EXPLORER_ORIGIN}/tx/${GENESIS.transactionId}`} target="_blank" rel="noreferrer">Explorer ↗</a><a href={SOURCE_REPOSITORY} target="_blank" rel="noreferrer">Source ↗</a><a href={CODEX_PETS_URL} target="_blank" rel="noreferrer">Get Qbit ↗</a></div>
+        <p>{presentation.footerLabel} · {isReady ? "recovered in your browser" : "verification happens in your browser"}</p>
+        <div><a href={`${definition.explorerOrigin}/tx/${facts.transactionId}`} target="_blank" rel="noreferrer">Explorer ↗</a><a href={SOURCE_REPOSITORY} target="_blank" rel="noreferrer">Source ↗</a><a href={ARTIFACTS.qbit.presentation.primaryAction.href} target="_blank" rel="noreferrer">Get Qbit ↗</a></div>
       </footer>
     </main>
   );

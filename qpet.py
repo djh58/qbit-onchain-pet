@@ -14,16 +14,24 @@ row, frame count, fps, loop flag) so the pet can be re-animated from chain
 data alone.
 
     qpet.py inscribe --manifest pet.json --sheet spritesheet.webp [--dry-run]
+    qpet.py broadcast --signed qpet.signed.hex
     qpet.py view <txid> [--out pet.html]
 """
 
 import argparse
 import base64
+from decimal import Decimal, InvalidOperation
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
 import hashlib
 import html
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 
@@ -46,8 +54,13 @@ V1_STATES = [
 DEFAULT_CLI = "qbit-cli"
 DEFAULT_CHAIN = "main"
 MAX_SHEET_BYTES = 16 * 1024 * 1024
+MAX_SIGNED_TRANSACTION_HEX_CHARACTERS = 2 * (MAX_SHEET_BYTES + 1024 * 1024)
 MAX_STATES = 32
+BITS_PER_QBT = 100_000_000
+MIN_P2MR_RECIPIENT_BITS = 2_855
+MAX_QBT_BITS = 210_000_000 * BITS_PER_QBT
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 VIEWER_PLACEHOLDER_RE = re.compile(
     r"__(?:TITLE|CHAIN|DESC|CTYPE|SHEET_B64|TXID|CONF|MANIFEST_B64)__"
 )
@@ -58,10 +71,12 @@ def _reject_json_constant(value: str):
 
 
 class Rpc:
-    def __init__(self, cli, datadir, chain, wallet=None):
+    def __init__(self, cli, datadir, chain, wallet=None, rpc_port=None):
         self.base = [cli, f"-chain={chain}"]
         if datadir:
             self.base.append(f"-datadir={datadir}")
+        if rpc_port is not None:
+            self.base.append(f"-rpcport={rpc_port}")
         if wallet:
             self.base.append(f"-rpcwallet={wallet}")
 
@@ -280,8 +295,306 @@ def build_manifest(pet: dict, sheet: bytes) -> dict:
     }
 
 
+def _rpc_for_args(args):
+    return Rpc(
+        args.cli,
+        args.datadir,
+        args.chain,
+        args.wallet,
+        getattr(args, "rpc_port", None),
+    )
+
+
+def _validate_signed_hex(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_SIGNED_TRANSACTION_HEX_CHARACTERS
+        or len(value) % 2
+        or not HEX_RE.fullmatch(value)
+    ):
+        raise ValueError("signed transaction is not valid bounded hex")
+    return value
+
+
+def _read_signed_hex(path_value: str) -> str:
+    path = Path(path_value)
+    if path.stat().st_size > MAX_SIGNED_TRANSACTION_HEX_CHARACTERS + 1:
+        raise ValueError("signed transaction file is too large")
+    try:
+        value = path.read_text(encoding="ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError("signed transaction file is not ASCII hex") from exc
+    return _validate_signed_hex(value)
+
+
+def _durable_sync_file(fd: int):
+    """Request stable storage, using macOS F_FULLFSYNC when available."""
+    if sys.platform == "darwin" and fcntl is not None and hasattr(fcntl, "F_FULLFSYNC"):
+        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+        return
+    os.fsync(fd)
+
+
+def _sync_parent_directory(path: Path):
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    directory_fd = os.open(path.parent, flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _reserve_signed_output(path_value: str):
+    """Exclusively reserve a private file before any stateful signing RPC."""
+    path = Path(path_value)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        _durable_sync_file(fd)
+        _sync_parent_directory(path)
+    except Exception:
+        os.close(fd)
+        path.unlink(missing_ok=True)
+        raise
+    return path, fd
+
+
+def _write_reserved_signed_output(fd: int, signed_hex: str):
+    with os.fdopen(fd, "w", encoding="ascii", newline="\n") as handle:
+        handle.write(signed_hex)
+        handle.write("\n")
+        handle.flush()
+        _durable_sync_file(handle.fileno())
+
+
+def _print_transaction_inspection(inspection: dict):
+    print(
+        f"signed transaction: txid={inspection['txid']} "
+        f"vsize={inspection['vsize']} QPET output={inspection['output_index']}"
+    )
+    print(
+        f"envelope: {inspection['envelope_length']} bytes "
+        f"sha256={inspection['envelope_sha256']}"
+    )
+    print(
+        f"sheet: {inspection['sheet_length']} bytes "
+        f"sha256={inspection['sheet_sha256']}"
+    )
+    if "recipient_output_index" in inspection:
+        print(
+            f"recipient: output={inspection['recipient_output_index']} "
+            f"address={inspection['recipient_address']} "
+            f"amount={_format_qbt(inspection['recipient_amount_bits'])} QBT"
+        )
+
+
+def inspect_signed_qpet(
+    rpc,
+    signed_hex: str,
+    expected_payload=None,
+    expected_recipient=None,
+) -> dict:
+    """Decode and validate the QPET carried by one exact signed transaction."""
+    signed_hex = _validate_signed_hex(signed_hex)
+    tx = rpc("decoderawtransaction", signed_hex)
+    output_index, blob = find_qpet_output(tx)
+    if output_index != 0:
+        raise RuntimeError("signed transaction moved the QPET away from output 0")
+    manifest, sheet = decode_envelope(blob)
+    sheet_digest = validate_manifest(manifest, sheet)
+    if expected_payload is not None and blob != expected_payload:
+        raise RuntimeError("signed transaction QPET payload differs from the requested envelope")
+
+    txid = tx.get("txid") if isinstance(tx, dict) else None
+    vsize = tx.get("vsize") if isinstance(tx, dict) else None
+    if not isinstance(txid, str) or not SHA256_RE.fullmatch(txid):
+        raise RuntimeError("decoded transaction has an invalid txid")
+    if not _positive_int(vsize):
+        raise RuntimeError("decoded transaction has an invalid vsize")
+    inspection = {
+        "txid": txid.lower(),
+        "vsize": vsize,
+        "output_index": output_index,
+        "manifest": manifest,
+        "envelope_length": len(blob),
+        "envelope_sha256": hashlib.sha256(blob).hexdigest(),
+        "sheet_length": len(sheet),
+        "sheet_sha256": sheet_digest,
+    }
+    if expected_recipient is not None:
+        inspection.update(_inspect_recipient_output(tx, expected_recipient))
+    return inspection
+
+
+def _test_mempool_accept(rpc, signed_hex: str, inspection: dict) -> dict:
+    response = rpc("testmempoolaccept", [signed_hex])
+    if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], dict):
+        raise RuntimeError("testmempoolaccept returned an invalid response")
+    accept = response[0]
+    if not accept.get("allowed"):
+        raise RuntimeError(f"rejected by mempool policy: {accept}")
+    accept_txid = accept.get("txid")
+    if accept_txid is not None and (
+        not isinstance(accept_txid, str)
+        or accept_txid.lower() != inspection["txid"]
+    ):
+        raise RuntimeError("testmempoolaccept returned a different txid")
+    if accept.get("vsize") not in (None, inspection["vsize"]):
+        raise RuntimeError("testmempoolaccept returned a different vsize")
+    return accept
+
+
+def _require_noninteractive_consent(yes: bool):
+    if not yes and not sys.stdin.isatty():
+        raise RuntimeError("refusing to broadcast without --yes in a non-interactive session")
+
+
+def _rpc_port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("RPC port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("RPC port must be between 1 and 65535")
+    return port
+
+
+def _sha256(value: str) -> str:
+    if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError("expected SHA-256 must be exactly 64 hex characters")
+    return value.lower()
+
+
+def _qbt_amount_bits(value: str) -> int:
+    """Parse one positive, at-most-eight-decimal QBT amount into integer bits."""
+    try:
+        amount = Decimal(value)
+    except (InvalidOperation, ValueError) as exc:
+        raise argparse.ArgumentTypeError("QBT amount must be a decimal number") from exc
+    if not amount.is_finite() or amount <= 0:
+        raise argparse.ArgumentTypeError("QBT amount must be positive and finite")
+    bits = amount * BITS_PER_QBT
+    if bits != bits.to_integral_value():
+        raise argparse.ArgumentTypeError("QBT amount cannot have more than 8 decimals")
+    integer_bits = int(bits)
+    if integer_bits < MIN_P2MR_RECIPIENT_BITS:
+        raise argparse.ArgumentTypeError(
+            "QBT amount is below the Qbit v1 P2MR dust floor (0.00002855 QBT)"
+        )
+    if integer_bits > MAX_QBT_BITS:
+        raise argparse.ArgumentTypeError("QBT amount exceeds the maximum money range")
+    return integer_bits
+
+
+def _format_qbt(bits: int) -> str:
+    whole, fraction = divmod(bits, BITS_PER_QBT)
+    return f"{whole}.{fraction:08d}"
+
+
+def _recipient_from_args(args):
+    address = getattr(args, "recipient", None)
+    amount_bits = getattr(args, "recipient_amount", None)
+    if (address is None) != (amount_bits is None):
+        raise RuntimeError("--recipient and --recipient-amount must be provided together")
+    if address is None:
+        return None
+    if not isinstance(address, str) or not 8 <= len(address) <= 128 or address.strip() != address:
+        raise RuntimeError("recipient address is invalid")
+    if not isinstance(amount_bits, int) or isinstance(amount_bits, bool) or not 1 <= amount_bits <= MAX_QBT_BITS:
+        raise RuntimeError("recipient amount is invalid")
+    return {"address": address, "amount_bits": amount_bits}
+
+
+def _broadcast_identity_from_args(args) -> dict:
+    txid = getattr(args, "expected_txid", None)
+    envelope_sha256 = getattr(args, "expected_envelope_sha256", None)
+    pet_id = getattr(args, "expected_pet_id", None)
+    if not isinstance(txid, str) or not SHA256_RE.fullmatch(txid):
+        raise RuntimeError("broadcast requires an exact expected transaction ID")
+    if not isinstance(envelope_sha256, str) or not SHA256_RE.fullmatch(envelope_sha256):
+        raise RuntimeError("broadcast requires an exact expected envelope SHA-256")
+    if not _bounded_utf8_string(pet_id, 128):
+        raise RuntimeError("broadcast requires an exact expected pet ID")
+    return {
+        "txid": txid.lower(),
+        "envelope_sha256": envelope_sha256.lower(),
+        "pet_id": pet_id,
+    }
+
+
+def _validate_recipient(rpc, recipient: dict) -> dict:
+    """Resolve the exact destination script on the selected node and chain."""
+    result = rpc("validateaddress", recipient["address"])
+    if not isinstance(result, dict) or result.get("isvalid") is not True:
+        raise RuntimeError("recipient address is not valid on the selected Qbit chain")
+    normalized_address = result.get("address")
+    script_hex = result.get("scriptPubKey")
+    if normalized_address != recipient["address"]:
+        raise RuntimeError("recipient address did not round-trip exactly through the selected node")
+    if (
+        not isinstance(script_hex, str)
+        or not script_hex
+        or len(script_hex) % 2
+        or not HEX_RE.fullmatch(script_hex)
+    ):
+        raise RuntimeError("selected node returned an invalid recipient script")
+    return {**recipient, "script_hex": script_hex.lower()}
+
+
+def _decoded_qbt_bits(value) -> int:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise RuntimeError("decoded recipient output has an invalid amount") from exc
+    bits = amount * BITS_PER_QBT
+    if not amount.is_finite() or bits != bits.to_integral_value():
+        raise RuntimeError("decoded recipient output amount is not exact to one bit")
+    return int(bits)
+
+
+def _inspect_recipient_output(tx: dict, expected: dict) -> dict:
+    outputs = tx.get("vout") if isinstance(tx, dict) else None
+    if not isinstance(outputs, list):
+        raise RuntimeError("decoded transaction has no output list")
+    script_matches = []
+    for vout in outputs:
+        if not isinstance(vout, dict):
+            continue
+        script = vout.get("scriptPubKey")
+        if not isinstance(script, dict) or str(script.get("hex", "")).lower() != expected["script_hex"]:
+            continue
+        script_matches.append(vout)
+    if len(script_matches) != 1:
+        raise RuntimeError("signed transaction does not contain exactly one requested recipient output")
+    output = script_matches[0]
+    if _decoded_qbt_bits(output.get("value")) != expected["amount_bits"]:
+        raise RuntimeError("signed transaction recipient amount differs from the requested amount")
+    output_index = output.get("n")
+    if output_index != 1:
+        raise RuntimeError("funded transaction moved the recipient away from output 1")
+    return {
+        "recipient_output_index": output_index,
+        "recipient_address": expected["address"],
+        "recipient_amount_bits": expected["amount_bits"],
+    }
+
+
 def cmd_inscribe(args):
-    rpc = Rpc(args.cli, args.datadir, args.chain, args.wallet)
+    if not args.dry_run:
+        # This must precede even RPC construction: funding and PQC signing are stateful.
+        _require_noninteractive_consent(args.yes)
+    if not getattr(args, "out_signed", None):
+        raise RuntimeError(
+            "--out-signed is required so stateful PQC signature bytes cannot be discarded"
+        )
+    requested_recipient = _recipient_from_args(args)
+
     pet = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     sheet = Path(args.sheet).read_bytes()
     manifest = build_manifest(pet, sheet)
@@ -296,32 +609,114 @@ def cmd_inscribe(args):
     )
     print(f"envelope: {len(payload)} bytes (manifest {mlen} B, sheet {len(sheet)} B)")
 
-    raw = rpc("createrawtransaction", [], [{"data": payload.hex()}])
-    funded = rpc("fundrawtransaction", raw, {"fee_rate": args.fee_rate})
-    signed = rpc("signrawtransactionwithwallet", funded["hex"])
-    if not signed.get("complete"):
-        raise RuntimeError(f"signing incomplete: {signed}")
+    reserved_path = None
+    reserved_fd = None
+    signed_available = False
+    if getattr(args, "out_signed", None):
+        reserved_path, reserved_fd = _reserve_signed_output(args.out_signed)
 
-    accept = rpc("testmempoolaccept", [signed["hex"]])[0]
-    if not accept.get("allowed"):
-        raise RuntimeError(f"rejected by mempool policy: {accept}")
-    vsize, fee = accept["vsize"], funded["fee"]
-    print(f"testmempoolaccept OK: vsize={vsize} fee={fee} QBT")
+    try:
+        rpc = _rpc_for_args(args)
+        recipient = _validate_recipient(rpc, requested_recipient) if requested_recipient else None
+        outputs = [{"data": payload.hex()}]
+        if recipient:
+            outputs.append({recipient["address"]: _format_qbt(recipient["amount_bits"])})
+        raw = rpc("createrawtransaction", [], outputs)
+        funded = rpc(
+            "fundrawtransaction",
+            raw,
+            {
+                "fee_rate": args.fee_rate,
+                "changePosition": len(outputs),
+                "lockUnspents": True,
+            },
+        )
+        signed = rpc("signrawtransactionwithwallet", funded["hex"])
+        signed_hex = _validate_signed_hex(signed.get("hex"))
+        signed_available = True
+        if reserved_fd is not None:
+            fd_to_write = reserved_fd
+            reserved_fd = None
+            _write_reserved_signed_output(fd_to_write, signed_hex)
+            print(f"signed transaction saved privately to {reserved_path}")
+        if not signed.get("complete"):
+            raise RuntimeError(f"signing incomplete: {signed}")
 
-    if args.dry_run:
-        print("dry run: not broadcasting")
-        return
+        inspection = inspect_signed_qpet(
+            rpc,
+            signed_hex,
+            expected_payload=payload,
+            expected_recipient=recipient,
+        )
+        _print_transaction_inspection(inspection)
+        accept = _test_mempool_accept(rpc, signed_hex, inspection)
+        vsize, fee = inspection["vsize"], funded["fee"]
+        print(f"testmempoolaccept OK: vsize={vsize} fee={fee} QBT")
+
+        if args.dry_run:
+            print("dry run: not broadcasting")
+            return
+        if not args.yes:
+            answer = input(
+                f"Broadcast exact transaction {inspection['txid']} with fee {fee} QBT "
+                f"and vsize {vsize}? Type 'broadcast' to continue: "
+            )
+            if answer.strip() != "broadcast":
+                print("cancelled: not broadcasting")
+                return
+        txid = rpc("sendrawtransaction", signed_hex)
+        if not isinstance(txid, str) or txid.lower() != inspection["txid"]:
+            raise RuntimeError("sendrawtransaction returned a different txid")
+        print(f"broadcast: txid={txid}")
+    finally:
+        if reserved_fd is not None:
+            os.close(reserved_fd)
+            if not signed_available and reserved_path is not None:
+                reserved_path.unlink(missing_ok=True)
+
+
+def cmd_broadcast(args):
+    # Refuse before constructing the RPC client or decoding through the node.
+    _require_noninteractive_consent(args.yes)
+    requested_recipient = _recipient_from_args(args)
+    qpet_only = getattr(args, "qpet_only", False)
+    if requested_recipient is None and not qpet_only:
+        raise RuntimeError(
+            "broadcast requires recipient expectations or explicit --qpet-only acknowledgement"
+        )
+    if requested_recipient is not None and qpet_only:
+        raise RuntimeError("--qpet-only cannot be combined with recipient expectations")
+    expected_identity = _broadcast_identity_from_args(args)
+    signed_hex = _read_signed_hex(args.signed)
+    rpc = _rpc_for_args(args)
+    recipient = _validate_recipient(rpc, requested_recipient) if requested_recipient else None
+    inspection = inspect_signed_qpet(rpc, signed_hex, expected_recipient=recipient)
+    if inspection["txid"] != expected_identity["txid"]:
+        raise RuntimeError("saved transaction ID differs from the expected transaction")
+    if inspection["envelope_sha256"] != expected_identity["envelope_sha256"]:
+        raise RuntimeError("saved transaction envelope SHA-256 differs from the expected artifact")
+    if inspection["manifest"]["id"] != expected_identity["pet_id"]:
+        raise RuntimeError("saved transaction pet ID differs from the expected artifact")
+    _print_transaction_inspection(inspection)
+    accept = _test_mempool_accept(rpc, signed_hex, inspection)
+    accepted_fees = accept.get("fees")
+    accepted_fee = accepted_fees.get("base") if isinstance(accepted_fees, dict) else None
+    fee_text = f" fee={accepted_fee} QBT" if accepted_fee is not None else ""
+    print(f"testmempoolaccept OK: vsize={inspection['vsize']}{fee_text}")
+
     if not args.yes:
-        if not sys.stdin.isatty():
-            raise RuntimeError("refusing to broadcast without --yes in a non-interactive session")
         answer = input(
-            f"Broadcast this exact transaction with fee {fee} QBT and vsize {vsize}? "
+            f"Broadcast exact transaction txid={inspection['txid']} "
+            f"pet={expected_identity['pet_id']} "
+            f"envelope={expected_identity['envelope_sha256']}? "
             "Type 'broadcast' to continue: "
         )
         if answer.strip() != "broadcast":
             print("cancelled: not broadcasting")
             return
-    txid = rpc("sendrawtransaction", signed["hex"])
+    txid = rpc("sendrawtransaction", signed_hex)
+    if not isinstance(txid, str) or txid.lower() != inspection["txid"]:
+        raise RuntimeError("sendrawtransaction returned a different txid")
     print(f"broadcast: txid={txid}")
 
 
@@ -426,11 +821,12 @@ def render_viewer(
     return VIEWER_PLACEHOLDER_RE.sub(lambda match: replacements[match.group(0)], VIEWER)
 
 
-def find_qpet_payload(tx: dict) -> bytes:
-    """Find the first well-formed single-push QPET output in a decoded transaction."""
+def find_qpet_output(tx: dict):
+    """Return the unique QPET output index and its single-push envelope."""
     if not isinstance(tx, dict) or not isinstance(tx.get("vout"), list):
         raise RuntimeError("transaction response has no outputs")
-    for vout in tx["vout"]:
+    matches = []
+    for index, vout in enumerate(tx["vout"]):
         try:
             script_hex = vout["scriptPubKey"]["hex"]
             if not isinstance(script_hex, str):
@@ -443,12 +839,21 @@ def find_qpet_payload(tx: dict) -> bytes:
             # Transactions can carry unrelated or malformed OP_RETURN outputs.
             continue
         if data[:4] == MAGIC:
-            return data
+            matches.append((index, data))
+    if len(matches) > 1:
+        raise RuntimeError("transaction has multiple QPET OP_RETURN outputs")
+    if matches:
+        return matches[0]
     raise RuntimeError("no QPET OP_RETURN output in that transaction")
 
 
+def find_qpet_payload(tx: dict) -> bytes:
+    """Find the unique well-formed single-push QPET output in a transaction."""
+    return find_qpet_output(tx)[1]
+
+
 def cmd_view(args):
-    rpc = Rpc(args.cli, args.datadir, args.chain, args.wallet)
+    rpc = _rpc_for_args(args)
     try:
         tx = rpc("getrawtransaction", args.txid, True)
     except RuntimeError:
@@ -482,19 +887,84 @@ def main():
     ap.add_argument("--datadir", help="qbit data directory (default: qbit Core default)")
     ap.add_argument("--chain", default=DEFAULT_CHAIN, help="qbit chain (default: main)")
     ap.add_argument("--wallet", help="wallet name for inscription or wallet fallback")
+    ap.add_argument("--rpc-port", type=_rpc_port, help="qbit RPC port override")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     ins = sub.add_parser("inscribe", help="inscribe a pet in one OP_RETURN transaction")
     ins.add_argument("--manifest", required=True, help="codex-pets pet.json")
     ins.add_argument("--sheet", required=True, help="spritesheet image")
     ins.add_argument("--fee-rate", type=int, default=1, help="bits/vB (default 1)")
-    ins.add_argument("--dry-run", action="store_true")
+    ins.add_argument(
+        "--recipient",
+        help="also send one exact output to this address (requires --recipient-amount)",
+    )
+    ins.add_argument(
+        "--recipient-amount",
+        type=_qbt_amount_bits,
+        metavar="QBT",
+        help="exact positive QBT amount, up to 8 decimals (requires --recipient)",
+    )
+    ins.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="fund, sign, save, inspect, and test the transaction without broadcasting",
+    )
+    ins.add_argument(
+        "--out-signed",
+        required=True,
+        help="exclusively save the one signed transaction to a new mode-0600 file",
+    )
     ins.add_argument(
         "--yes",
         action="store_true",
         help="broadcast without the interactive confirmation",
     )
     ins.set_defaults(fn=cmd_inscribe)
+
+    broadcast = sub.add_parser(
+        "broadcast",
+        help="validate and broadcast exact signed transaction bytes without re-signing",
+    )
+    broadcast.add_argument("--signed", required=True, help="saved signed transaction hex")
+    broadcast.add_argument(
+        "--expected-txid",
+        required=True,
+        type=_sha256,
+        help="require this exact decoded transaction ID",
+    )
+    broadcast.add_argument(
+        "--expected-envelope-sha256",
+        required=True,
+        type=_sha256,
+        help="require this exact QPET envelope SHA-256",
+    )
+    broadcast.add_argument(
+        "--expected-pet-id",
+        required=True,
+        help="require this exact QPET manifest ID",
+    )
+    broadcast_mode = broadcast.add_mutually_exclusive_group(required=True)
+    broadcast_mode.add_argument(
+        "--recipient",
+        help="require one exact output to this address (requires --recipient-amount)",
+    )
+    broadcast_mode.add_argument(
+        "--qpet-only",
+        action="store_true",
+        help="explicitly acknowledge that only QPET output zero is pinned",
+    )
+    broadcast.add_argument(
+        "--recipient-amount",
+        type=_qbt_amount_bits,
+        metavar="QBT",
+        help="require this exact positive QBT amount, up to 8 decimals",
+    )
+    broadcast.add_argument(
+        "--yes",
+        action="store_true",
+        help="broadcast without the interactive confirmation",
+    )
+    broadcast.set_defaults(fn=cmd_broadcast)
 
     vw = sub.add_parser("view", help="rebuild the animated viewer from chain data")
     vw.add_argument("txid")

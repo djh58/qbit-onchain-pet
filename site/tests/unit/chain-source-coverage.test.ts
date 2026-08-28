@@ -237,6 +237,8 @@ describe.sequential("chain source exhaustive coverage", () => {
     for (const candidate of [null, 1, []]) invalidTransaction({ ...base, vout: [candidate] });
     invalidTransaction({ ...base, vout: [{ ...output, scriptpubkey_type: null }] });
     invalidTransaction({ ...base, vout: [{ ...output, scriptpubkey_type: "x".repeat(65) }] });
+    invalidTransaction({ ...base, vout: [{ ...output, scriptpubkey_address: 1 }] });
+    invalidTransaction({ ...base, vout: [{ ...output, scriptpubkey_address: "x".repeat(129) }] });
     invalidTransaction({ ...base, vout: [{ ...output, value: -1 }] });
     invalidTransaction({ ...base, vout: [{ ...output, value: Number.MAX_SAFE_INTEGER + 1 }] });
     invalidTransaction({ ...base, vout: [{ ...output, scriptpubkey: "x" }] });

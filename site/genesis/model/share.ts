@@ -14,6 +14,13 @@ export type ShareAttemptGuard = Readonly<{
   invalidate: () => void;
 }>;
 
+export type ShareCopy = Readonly<{ title: string; text: string }>;
+
+const GENESIS_SHARE_COPY: ShareCopy = Object.freeze({
+  title: "Qbit Genesis — Bytes. Then being.",
+  text: "Watch one Qbit mainnet transaction become the verified Qbit mascot.",
+});
+
 export function buildGenesisShareUrl(
   location: Readonly<{ origin: string; pathname: string }>,
   fragment: string,
@@ -55,13 +62,17 @@ function isCancellation(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-export async function shareGenesis(url: string, adapter: ShareAdapter): Promise<ShareOutcome> {
+export async function shareGenesis(
+  url: string,
+  adapter: ShareAdapter,
+  copy: ShareCopy = GENESIS_SHARE_COPY,
+): Promise<ShareOutcome> {
   if (!/^https?:\/\//.test(url)) return "failed";
   if (adapter.share) {
     try {
       await adapter.share({
-        title: "Qbit Genesis — Bytes. Then being.",
-        text: "Watch one Qbit mainnet transaction become the verified Qbit mascot.",
+        title: copy.title,
+        text: copy.text,
         url,
       });
       return "shared";

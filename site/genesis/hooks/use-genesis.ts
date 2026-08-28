@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import { GENESIS } from "../model/facts";
+import { GENESIS_ARTIFACT, type QpetDefinition } from "../model/facts";
 import { createAbortScope } from "../model/abort-scope";
 import {
   INITIAL_RECOVERY_STATE,
@@ -15,7 +15,11 @@ import { recoverGenesis } from "../services/chain-source";
 const RECOVERY_TIMEOUT_MS = 10_000;
 const MEDIA_DECODE_TIMEOUT_MS = 10_000;
 
-function decodeVerifiedImage(url: string, signal: AbortSignal): Promise<HTMLImageElement> {
+function decodeVerifiedImage(
+  url: string,
+  signal: AbortSignal,
+  definition: QpetDefinition,
+): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     const abort = () => {
@@ -24,7 +28,10 @@ function decodeVerifiedImage(url: string, signal: AbortSignal): Promise<HTMLImag
     };
     image.onload = () => {
       signal.removeEventListener("abort", abort);
-      if (image.naturalWidth !== GENESIS.sheetWidth || image.naturalHeight !== GENESIS.sheetHeight) {
+      if (
+        image.naturalWidth !== definition.facts.sheetWidth
+        || image.naturalHeight !== definition.facts.sheetHeight
+      ) {
         reject(new Error("dimension mismatch"));
         return;
       }
@@ -43,7 +50,7 @@ function decodeVerifiedImage(url: string, signal: AbortSignal): Promise<HTMLImag
   });
 }
 
-export function useGenesis() {
+export function useGenesis(definition: QpetDefinition = GENESIS_ARTIFACT) {
   const [state, dispatch] = useReducer(recoveryReducer, INITIAL_RECOVERY_STATE);
   const attemptRef = useRef(0);
   // This controller represents retry/unmount only. Phase deadlines abort
@@ -84,6 +91,7 @@ export function useGenesis() {
         reportStage,
         undefined,
         lifecycleController.signal,
+        definition,
       );
       window.clearTimeout(recoveryTimeout);
       recoveryScope.dispose();
@@ -108,7 +116,7 @@ export function useGenesis() {
         mediaScope = createAbortScope(lifecycleController.signal);
         mediaTimeout = window.setTimeout(mediaScope.abortForDeadline, MEDIA_DECODE_TIMEOUT_MS);
         decodeAttempted = true;
-        sheetImage = await decodeVerifiedImage(sheetUrl, mediaScope.signal);
+        sheetImage = await decodeVerifiedImage(sheetUrl, mediaScope.signal, definition);
         mediaDecoded = true;
 
         if (attemptId !== attemptRef.current) {
@@ -143,7 +151,7 @@ export function useGenesis() {
         mediaScope?.dispose();
       }
     })();
-  }, [clearAttempt]);
+  }, [clearAttempt, definition]);
 
   useEffect(() => {
     start();

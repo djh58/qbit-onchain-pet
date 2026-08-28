@@ -33,7 +33,7 @@ test("replaces choreography from live hash navigation and ignores invalid fragme
   expect(stats.blockRequests).toBe(1);
 
   await page.evaluate(() => { window.location.hash = "#play=%%%"; });
-  await expect(page.getByText("The choreography in this URL was invalid and was ignored. Qbit still recovered normally.")).toBeVisible();
+  await expect(page.getByText("The choreography in this URL was invalid and was ignored. The QPET still recovered normally.")).toBeVisible();
   await expect(mascotSurface(page)).toHaveCount(1);
   expect(stats).toEqual({ transactionRequests: 1, blockRequests: 1, unexpectedExplorerRequests: [] });
 });
@@ -270,6 +270,7 @@ test("passes WCAG A/AA checks and keeps core controls keyboard operable with vis
   await expect(page.locator(`a[href="${EXPLORER_ORIGIN}/tx/852748890119300166f0c3050da3fee5c55316d199bcff1425424c009d2e62b9"]`).first()).toBeVisible();
   await page.getByRole("button", { name: "Open receipt" }).click();
   await expect(page.locator("#chain-receipt")).toHaveAttribute("open", "");
+  await expect(page.getByText("Qbit mainnet", { exact: true })).toBeVisible();
   await expect(page.locator(`a[href="${EXPLORER_ORIGIN}/block/${BLOCK_HASH}"]`)).toBeVisible();
 
   const results = await new AxeBuilder({ page })

@@ -14,6 +14,14 @@ const BLOCK_HEIGHT = 53_026;
 const BLOCK_HASH = "0000000000000000893a81d2e44e1e16cbaf59cd58f901b6be29603ad2935460";
 const TRANSACTION_URL = `${EXPLORER_ORIGIN}/api/tx/${TRANSACTION_ID}`;
 const BLOCK_URL = `${EXPLORER_ORIGIN}/api/block-height/${BLOCK_HEIGHT}`;
+const HONORARY_TRANSACTION_ID = "53dd2d8982bea1dd1676f6506a497a31c14a81aad21639d019e3658150f231af";
+const HONORARY_BLOCK_HEIGHT = 63_174;
+const HONORARY_BLOCK_HASH = "000000000000000027a132d416c0d5dfd8a8b6bca42c0b6548a6d3ec66b4a100";
+const HONORARY_TRANSACTION_URL = `${EXPLORER_ORIGIN}/api/tx/${HONORARY_TRANSACTION_ID}`;
+const HONORARY_BLOCK_URL = `${EXPLORER_ORIGIN}/api/block-height/${HONORARY_BLOCK_HEIGHT}`;
+const HONORARY_RECIPIENT = "qb1z8q6dsf8sla7vcn2gzxnspuzpshzrkkk80c2a67xdpea2yxkpsm4qmzhake";
+const HONORARY_RECIPIENT_SCRIPT = "52203834d824f0ff7ccc4d4811a700f04185c43b5ac77e15dd78cd0e7aa21ac186ea";
+const HONORARY_SHEET_SHA256 = "128f1ebbc42239286c21c622ad5892237d2d73842fdf3481989b70606046a7cc";
 const STATE_IDS = [
   "idle",
   "running-right",
@@ -263,6 +271,120 @@ test("production is explorer-attested and awakens one on-chain Qbit Blob", async
       blobImageCount: document.querySelectorAll('img[src^="blob:"]').length,
     };
   })).toEqual({ sameNode: true, src: imageFacts.src, blobImageCount: 1 });
+  await page.keyboard.up("x");
+  await expect(page.locator('[data-xray="closed"]')).toHaveCount(1);
+});
+
+test("production recovers the recipient-bound mainnet Miner One Blob", async ({ page, request }, testInfo) => {
+  const configuredBaseURL = String(testInfo.project.use.baseURL ?? SITE_ORIGIN);
+  const configuredOrigin = new URL(configuredBaseURL).origin;
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await installBlobProbe(page);
+
+  const honoraryResponse = await request.get("/honorary", { timeout: 30_000 });
+  expect(honoraryResponse.status()).toBe(200);
+  expect(honoraryResponse.headers()["content-type"]).toContain("text/html");
+  expectSecurityHeaders(honoraryResponse.headers());
+
+  const explorerHeaders = { Accept: "application/json", Origin: configuredOrigin };
+  const [transactionResponse, blockResponse] = await Promise.all([
+    request.get(HONORARY_TRANSACTION_URL, { headers: explorerHeaders, timeout: 30_000 }),
+    request.get(HONORARY_BLOCK_URL, {
+      headers: { Accept: "text/plain", Origin: configuredOrigin },
+      timeout: 30_000,
+    }),
+  ]);
+  expect(transactionResponse.status()).toBe(200);
+  expectCors(transactionResponse);
+  const transaction = JSON.parse((await transactionResponse.body()).toString("utf8")) as {
+    txid: string;
+    size: number;
+    vsize: number;
+    fee: number;
+    status: { confirmed: boolean; block_height: number; block_hash: string };
+    vout: Array<{
+      value: number;
+      scriptpubkey: string;
+      scriptpubkey_type: string;
+      scriptpubkey_address?: string;
+    }>;
+  };
+  expect(transaction).toMatchObject({
+    txid: HONORARY_TRANSACTION_ID,
+    size: 14_494,
+    vsize: 14_494,
+    fee: 28_990,
+    status: {
+      confirmed: true,
+      block_height: HONORARY_BLOCK_HEIGHT,
+      block_hash: HONORARY_BLOCK_HASH,
+    },
+  });
+  expect(transaction.vout[0]).toMatchObject({ value: 0, scriptpubkey_type: "op_return" });
+  expect(transaction.vout[1]).toMatchObject({
+    value: 10_000,
+    scriptpubkey: HONORARY_RECIPIENT_SCRIPT,
+    scriptpubkey_type: "v2_p2mr",
+    scriptpubkey_address: HONORARY_RECIPIENT,
+  });
+  expect(blockResponse.status()).toBe(200);
+  expectCors(blockResponse);
+  expect((await blockResponse.text()).trim()).toBe(HONORARY_BLOCK_HASH);
+
+  const pageTransactionResponse = page.waitForResponse(
+    (response) => response.url() === HONORARY_TRANSACTION_URL && response.status() === 200,
+    { timeout: 45_000 },
+  );
+  const pageBlockResponse = page.waitForResponse(
+    (response) => response.url() === HONORARY_BLOCK_URL && response.status() === 200,
+    { timeout: 45_000 },
+  );
+  const [documentResponse, browserTransactionResponse, browserBlockResponse] = await Promise.all([
+    page.goto("/honorary", { waitUntil: "domcontentloaded" }),
+    pageTransactionResponse,
+    pageBlockResponse,
+  ]);
+  expect(documentResponse?.status()).toBe(200);
+  expect(browserTransactionResponse.headers()["access-control-allow-origin"]).toBe("*");
+  expect(browserBlockResponse.headers()["access-control-allow-origin"]).toBe("*");
+
+  const status = page.getByRole("status");
+  await expect(status).toContainText("Recovered from Qbit mainnet");
+  await expect(status).toContainText("confirmed, reported by mempool.qbit.org");
+  await expect(page.getByText("Miner #1 · Mainnet", { exact: true })).toBeVisible();
+  await expect(page.getByText("OG · Mainnet", { exact: true })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("testnet");
+
+  const mascotSurface = page.locator('[data-media-origin="verified-blob"]');
+  await expect(mascotSurface).toHaveCount(1);
+  const image = mascotSurface.locator("img");
+  await expect(image).toHaveCount(1);
+  const imageFacts = await image.evaluate((node) => ({
+    src: (node as HTMLImageElement).src,
+    naturalWidth: (node as HTMLImageElement).naturalWidth,
+    naturalHeight: (node as HTMLImageElement).naturalHeight,
+    complete: (node as HTMLImageElement).complete,
+  }));
+  expect(imageFacts).toMatchObject({ naturalWidth: 1_536, naturalHeight: 1_872, complete: true });
+  expect(imageFacts.src).toMatch(/^blob:/);
+  expect(await page.evaluate(() => {
+    const target = globalThis as typeof globalThis & {
+      __qbitLiveBlobProbe?: { created: Array<{ url: string; size: number; type: string }> };
+    };
+    return target.__qbitLiveBlobProbe?.created;
+  })).toEqual([{ url: imageFacts.src, size: 9_644, type: "image/webp" }]);
+
+  await page.getByText("Complete chain receipt", { exact: true }).click();
+  await expect(page.getByText("exact output index + amount + script verified ✓", { exact: true })).toBeVisible();
+  await expect(page.getByText(`1 · 0.00010000 QBT · v2_p2mr`, { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: `${HONORARY_RECIPIENT} ↗`, exact: true })).toBeVisible();
+  await expect(page.getByText(HONORARY_RECIPIENT_SCRIPT, { exact: true })).toBeVisible();
+  await expect(page.locator(`a[href="${EXPLORER_ORIGIN}/tx/${HONORARY_TRANSACTION_ID}"]`).first()).toBeVisible();
+  await expect(page.locator(`a[href="${EXPLORER_ORIGIN}/block/${HONORARY_BLOCK_HASH}"]`).first()).toBeVisible();
+
+  await page.keyboard.down("x");
+  await expect(page.locator('[data-xray="open"]')).toHaveCount(1);
+  await expect(page.getByText(`sha256 ${HONORARY_SHEET_SHA256}`)).toBeVisible();
   await page.keyboard.up("x");
   await expect(page.locator('[data-xray="closed"]')).toHaveCount(1);
 });
